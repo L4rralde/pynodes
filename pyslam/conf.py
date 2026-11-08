@@ -1,0 +1,8 @@
+VIDEO_SRC_PATH = "/Users/l4rralde/Desktop/CIMAT/Tesis/pynodes/data/frames"
+MIN_DISPARITY = 10.0
+CHUNK_SIZE = 8
+CHUNK_OVERLAP = 1
+MIN_SIMILARITY = 0.9
+VPR_REPO_PATH = "" #TODO
+VGGT_OMEGA_CKPT = "" #TODO
+NMS_WINDOW = 10
