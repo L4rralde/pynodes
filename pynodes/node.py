@@ -2,8 +2,31 @@ import queue
 from multiprocessing.synchronize import Event as EventClass
 from collections import defaultdict
 from typing import Callable, Any
+import logging
 
 from .message import Message
+
+
+class ColoredFormatter(logging.Formatter):
+    COLORS = {
+        "DEBUG": "\033[36m",     # Cyan
+        "INFO": "\033[32m",      # Green
+        "WARNING": "\033[33m",   # Yellow
+        "ERROR": "\033[31m",    # Red
+        "CRITICAL": "\033[1;31m" # Bold red
+    }
+
+    RESET = "\033[0m"
+
+    def format(self, record):
+        color = self.COLORS.get(record.levelname, "")
+
+        # Copy to avoid modifying the original shared LogRecord
+        record = logging.makeLogRecord(record.__dict__)
+        record.levelname = f"{color}{record.levelname}{self.RESET}"
+        record.node_name = f"\033[1m{record.node_name}{self.RESET}"
+
+        return super().format(record)
 
 
 class Node:
@@ -17,6 +40,26 @@ class Node:
 
         self._callbacks = defaultdict(list)
         self._sequences = defaultdict(int)
+        self.done: bool = False
+        self.logger = self._create_logger()
+
+    def _create_logger(self):
+        logger = logging.getLogger(f"Node.{self.name}.{self.node_id}")
+        logger.setLevel(logging.DEBUG)
+
+        if not logger.handlers:
+            handler = logging.StreamHandler()
+
+            formatter = ColoredFormatter(
+                "[%(node_name)s][%(levelname)s] %(message)s"
+            )
+
+            handler.setFormatter(formatter)
+            logger.addHandler(handler)
+
+        logger.propagate = False
+
+        return logging.LoggerAdapter(logger, {"node_name": self.name})
 
     def setup(self):
         pass
@@ -58,20 +101,17 @@ class Node:
                 try:
                     callback(msg)
                 except Exception as e:
-                    print(
-                        f"[{self.name}] Callback error: {e}",
-                        flush=True
-                    )
+                    self.logger.exception(f"Callback error: {e}")
 
     def spin(self):
         self.setup()
-        print(f"[{self.name}] Started", flush=True)
+        self.logger.info("Started")
 
-        while not self.stop_event.is_set():
+        while not self.stop_event.is_set() and not self.done:
             try:
                 event = self.inbox.get(timeout=0.2)
                 self._dispatch(event)
             except queue.Empty:
                 continue
 
-        print(f"[{self.name}] Stopped", flush=True)
+        self.logger.info("Stopped")
