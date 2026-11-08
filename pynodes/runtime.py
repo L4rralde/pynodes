@@ -80,6 +80,7 @@ class Runtime:
     def spin(self, check_interval=0.5) -> None:
         try:
             while not self.stop_event.is_set():
+                all_dead = True
                 for node_id, process in self.processes.items():
                     if not process.is_alive():
                         print(
@@ -87,11 +88,14 @@ class Runtime:
                             f"(exit code: {process.exitcode})",
                             flush=True,
                         )
-
-                        self.shutdown()
-                        return
-
+                    else:
+                        all_dead = False
                     time.sleep(check_interval)
+
+                if all_dead:
+                    self.shutdown()
+                    return
+
         except KeyboardInterrupt:
             self.shutdown()
 
