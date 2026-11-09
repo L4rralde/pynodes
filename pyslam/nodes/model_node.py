@@ -1,4 +1,4 @@
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 import torch
 import torchvision.transforms.v2 as T
@@ -6,6 +6,8 @@ import numpy as np
 
 from pynodes import Node, Message
 import pyslam.conf as slam_conf
+from vggt_salad_slam.transforms.utils import to_ndarrays_for_pointcloud
+from vggt_salad_slam.dtypes import Prediction
 
 
 #FIXME: This node is not tested and some bugs are known.
@@ -40,10 +42,8 @@ class FoundationModelNode(Node):
         self.subscribe("/closed_loop/closing_chunk", self.on_closed_loop)
         self.advertise("/3dgfm/predictions")
         self.advertise("/vpr/descriptors")
-        #self.model = self.load_model().eval().to('cuda')
-
-    def to_tensor_img(self, np_img: np.ndarray) -> torch.Tensor:
-        return T.ToTensor()(np_img)
+        self.advertise("/pointcloud")
+        self.model = self.load_model().eval().to('cuda')
 
     def model_prediction(self, images: torch.Tensor, extract_features: bool=True) -> Dict[str, np.ndarray]:
         with torch.inference_mode():
@@ -75,56 +75,89 @@ class FoundationModelNode(Node):
         )
         return model
 
-    def on_chunk(self, msg: Message) -> None:
-        kfids = msg.payload['kf_ids']
-        imgs = msg.payload['imgs']
+    def finish(self) -> None:
+        if self.done:
+            return
+        self.logger.info("Finishing")
+        self.done = True
+        self.publish(
+            "/3dgfm/predictions",
+            {
+                "done": True
+            }
+        )
 
-        imgs = [self.to_tensor_img(img) for img in imgs]
+    def to_torch_img(self, img: np.ndarray) -> torch.Tensor:
+        return torch.from_numpy(img).permute(2, 0, 1)/255.0
 
+    def initialize_input_tensors(self, img_shape: Tuple[int]) -> None:
+        h, w = img_shape
+        self.input_chunk = torch.zeros(
+            slam_conf.CHUNK_SIZE, 3, h, w
+        ).to('cuda')
+        self.closing_chunk = torch.zeros(
+            2*slam_conf.CHUNK_OVERLAP, 3, h, w
+        ).to('cuda')
+
+    def append_chunks(self, kfids: List[int], imgs: List[torch.Tensor]) -> None:
         for kfid, img in zip(kfids, imgs):
+            if kfid in self.prev_kfids:
+                continue
             self.kf_storage.add(kfid, img)
 
-        h, w = imgs[0].shape[:2]
-        if self.input_chunk is None:
-            self.input_chunk = torch.zeros(
-                slam_conf.CHUNK_SIZE, 3, h, w
-            )
-            self.closing_chunk = torch.zeros(
-                2*slam_conf.CHUNK_OVERLAP, 3, h, w
-            )
+    def on_chunk(self, msg: Message) -> None:
+        if 'done' in msg.payload:
+            self.finish()
+            return
+
+        kfids = msg.payload['kf_ids']
+        imgs = msg.payload['imgs']
+        self.logger.info(f"Received chunk with kfids: {kfids}")
+
+        imgs = [
+            self.to_tensor_img(img)
+            for img in imgs
+        ]
+
+        if self.input_chunk is None or self.closing_chunk is None:
+            self.initialize_input_tensors(imgs[0].shape[-2:])
 
         for i, img in enumerate(imgs):
-            self.input_chunk[i] = img
+            self.input_chunk[i] = img.to('cuda')
 
-        predictions = self.model_prediction(self.input_chunk.to('cuda'))
-        descriptors = predictions.pop("descriptor")
+        x = self.input_chunk[:len(kfids)]
+
+        preds = self.model_prediction(x)
+
+        chunk_id = self.chunk_cnt
+        self.prev_kfids = kfids
+        self.chunk_cnt += 1
+
+        descriptors = preds['descriptor']
         self.publish(
             "/vpr/descriptors",
             {
-                "chunk_id": self.chunk_cnt,
+                "chunk_id": chunk_id,
                 "kf_ids": kfids,
                 "descriptors": descriptors
             }
         )
+        self.logger.info(f"Publishing descriptors of chunk_id: {self.chunk_cnt} with ids: {kfids}")
 
+        preds = Prediction(preds)
         self.publish(
-            "/3dgfm/predictions",
-            {
-                "type": "measurement",
-                "chunk_id": self.chunk_cnt,
-                "kf_ids": kfids,
-                "predictions": predictions,
-            }
+            "/pointcloud",
+            to_ndarrays_for_pointcloud(preds)
         )
-
-        self.chunk_cnt += 1
 
     def on_closed_loop(self, msg: Message) -> None:
         kfids = msg.payload['kf_ids']
         for i, kf_id in enumerate(kfids):
-            self.closing_chunk[i] = self.kf_storage.get(kf_id)
+            self.closing_chunk[i] = self.kf_storage.get(kf_id).to('cuda')
 
-        predictions = self.model_prediction(self.closing_chunk.to('cuda'))
+        x = self.closing_chunk[:len(kfids)]
+        predictions = self.model_prediction(x)
+        return 
         self.publish(
             "/3dgfm/predictions",
             {
@@ -213,4 +246,3 @@ class VprNode(FoundationModelNode):
 
     def on_closed_loop(self, msg):
         pass
-
