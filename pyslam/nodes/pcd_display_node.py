@@ -46,6 +46,21 @@ class PointcloudNode(Node):
         self.viz.poll_events()
         self.viz.update_renderer()
 
+    def spin(self):
+            self.setup()
+            self.logger.info("Started")
+    
+            while not self.stop_event.is_set() and not self.done:
+                try:
+                    event = self.inbox.get(timeout=0.2)
+                    self._dispatch(event)
+                except queue.Empty:
+                    self.viz.poll_events()
+                    continue
+    
+            self.logger.info("Stopped")
+    
+
     def finish(self) -> None:
         self.viz.destroy_window()
         self.logger.info("Finishing")
