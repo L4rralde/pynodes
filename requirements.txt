@@ -2,6 +2,18 @@ numpy<2
 opencv-python
 torch
 torchvision
+Pillow
+#pyyaml #required by opencv if ros is installed
+
 scipy
-gtsam-develop
+gtsam
 open3d
+
+#VGGT
+
+huggingface_hub
+einops
+safetensors
+
+peft
+pandas
