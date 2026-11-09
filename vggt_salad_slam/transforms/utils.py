@@ -148,3 +148,28 @@ def to_pointcloud(
     point_cloud.colors = o3d.utility.Vector3dVector(colors)
 
     return point_cloud
+
+
+def to_ndarrays_for_pointcloud(
+    preds: Prediction,
+    lower_p: float=40,
+    min_conf: float=1.02,
+    upper_p: float=80
+) -> Dict[str, np.ndarray]:
+    import open3d as o3d
+
+    mask = get_conf_mask(preds, lower_p, min_conf, upper_p)
+
+    points = get_pointmap(preds)[mask].reshape(-1, 3)
+
+    if mask.shape != preds.images.shape[:3] and preds.images.shape[1] == 3:
+        preds.images = preds.images.transpose(0, 2, 3, 1)
+    colors = preds.images[mask].reshape(-1, 3)
+
+    if np.max(colors) > 1:
+        colors = colors/255.0
+
+    return {
+        'points': points,
+        'colors': colors
+    }
