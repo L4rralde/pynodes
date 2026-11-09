@@ -43,7 +43,9 @@ class FoundationModelNode(Node):
         self.advertise("/3dgfm/predictions")
         self.advertise("/vpr/descriptors")
         self.advertise("/pointcloud")
+        self.logger.info("Loading model...")
         self.model = self.load_model().eval().to('cuda')
+        self.logger.info("Model loaded")
 
     def model_prediction(self, images: torch.Tensor, extract_features: bool=True) -> Dict[str, np.ndarray]:
         with torch.inference_mode():
@@ -53,6 +55,7 @@ class FoundationModelNode(Node):
             predictions["pose_enc"],
             predictions["images"].shape[-2:],
         )
+        predictions.pop("pose_enc")
 
         predictions['extrinsic'] = extrinsics
         predictions['intrinsic'] = intrinsics
@@ -71,7 +74,7 @@ class FoundationModelNode(Node):
             'L4rralde/Visual_Place_Recognition',
             'vggto_s_pre',
             slam_conf.VPR_REPO_PATH,
-            vggto_omega_ckpt=slam_conf.VGGT_OMEGA_CKPT
+            slam_conf.VGGT_OMEGA_CKPT
         )
         return model
 
@@ -82,6 +85,12 @@ class FoundationModelNode(Node):
         self.done = True
         self.publish(
             "/3dgfm/predictions",
+            {
+                "done": True
+            }
+        )
+        self.publish(
+            "/pointcloud",
             {
                 "done": True
             }
@@ -115,7 +124,7 @@ class FoundationModelNode(Node):
         self.logger.info(f"Received chunk with kfids: {kfids}")
 
         imgs = [
-            self.to_tensor_img(img)
+            self.to_torch_img(img)
             for img in imgs
         ]
 
@@ -133,7 +142,7 @@ class FoundationModelNode(Node):
         self.prev_kfids = kfids
         self.chunk_cnt += 1
 
-        descriptors = preds['descriptor']
+        descriptors = preds.pop('descriptor')
         self.publish(
             "/vpr/descriptors",
             {
@@ -144,7 +153,7 @@ class FoundationModelNode(Node):
         )
         self.logger.info(f"Publishing descriptors of chunk_id: {self.chunk_cnt} with ids: {kfids}")
 
-        preds = Prediction(preds)
+        preds = Prediction.from_dict(preds)
         self.publish(
             "/pointcloud",
             to_ndarrays_for_pointcloud(preds)
