@@ -18,7 +18,7 @@ class PointcloudNode(Node):
     def setup(self):
         self.subscribe("/pointcloud", self.on_pcd)
         self.viz = o3d.visualization.Visualizer()
-        self.viz.create_window()
+        self.viz.create_window(width=1280, height=720)
         self.pcd = o3d.geometry.PointCloud()
 
     def on_pcd(self, msg: Message) -> None:
