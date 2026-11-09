@@ -1,4 +1,4 @@
-VIDEO_SRC_PATH = "/Users/l4rralde/Desktop/CIMAT/Tesis/pynodes/data/frames"
+VIDEO_SRC_PATH = "./data/frames"
 MIN_DISPARITY = 10.0
 CHUNK_SIZE = 8
 CHUNK_OVERLAP = 1
