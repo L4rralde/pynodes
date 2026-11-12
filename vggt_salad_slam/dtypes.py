@@ -11,7 +11,7 @@ class Prediction:
     extrinsic: np.ndarray
     intrinsic: np.ndarray
     images: np.ndarray
-    ids: Optional[List[int]] = None
+    ids: Optional[np.ndarray] = None
     mask: Optional[np.ndarray] = None #For mapanything
     pointmap: Optional[np.ndarray] = None
 
