@@ -23,7 +23,7 @@ from pyslam.nodes import (
     FoundationModelNode,
     PointcloudNode
 )
-from pyslam.utilities.shm_predictions import AllocatedShmPrediction
+from pyslam.utilities.shmem import AllocatedShmPcdData, AllocatedShmPrediction
 
 #TODO: Include as a thread in the FoundationModelNode
 class LocalAlignNode(Node):
@@ -36,6 +36,7 @@ class LocalAlignNode(Node):
         self.accumulated_transforms: Dict[int, matt.MatrixTransform] = {
             0: self._aligner_type()
         }
+        self.pcd_shmem = AllocatedShmPcdData()
 
     def setup(self) -> None:
         self.advertise('/graph/measurement')
@@ -121,12 +122,16 @@ class LocalAlignNode(Node):
                 'pose': first_cam_pose
             }
         )
-        
+        self.publish_pcd(chunk_id, pcd_data)
+
+    def publish_pcd(self, chunk_id: int, pcd_data: Dict[str, np.ndarray]) -> None:
+        self.pcd_shmem.fill(**pcd_data)
         self.publish(
             "/pointcloud",
             {
                 'pcd_id': chunk_id,
-                **pcd_data
+                'shm': True,
+                'pcd_data': self.pcd_shmem.get_metadata()
             }
         )
 

@@ -6,6 +6,7 @@ import open3d as o3d
 import numpy as np
 
 from pynodes import Node, Message
+from pyslam.utilities.shmem import AllocatedShmPcdData
 
 
 class PointcloudNode(Node):
@@ -47,6 +48,23 @@ class PointcloudNode(Node):
 
         view_ctrl.convert_from_pinhole_camera_parameters(cam)
 
+    def extract_msg_pcd_data(self, msg: Message) -> Dict[str, np.ndarray]:
+        data = msg.payload
+        shm = data.get('shm', False)
+        if not shm:
+            return data['pcd_data']
+
+        return AllocatedShmPcdData.attach(data['pcd_data'])
+
+    def convert_msg_to_o3d_pcd(self, msg: Message) -> object:
+        points = msg.payload['pcd_data']['points']
+        colors = msg.payload['pcd_data']['colors']
+        received_pcd = o3d.geometry.PointCloud()
+        received_pcd.points = o3d.utility.Vector3dVector(points)
+        if colors is not None:
+            received_pcd.colors = o3d.utility.Vector3dVector(colors)
+        return received_pcd
+
     def on_pcd(self, msg: Message) -> None:
         data = msg.payload
         done = data.get('done', False)
@@ -55,14 +73,9 @@ class PointcloudNode(Node):
             return
 
         pcd_id = data['pcd_id']
-        points = data['points']
-        colors = data.get('colors', None)
         self.logger.info(f"Receiving new pointcloud: {pcd_id}")
-
-        received_pcd = o3d.geometry.PointCloud()
-        received_pcd.points = o3d.utility.Vector3dVector(points)
-        if colors is not None:
-            received_pcd.colors = o3d.utility.Vector3dVector(colors)
+        data['pcd_data'] = self.extract_msg_pcd_data(msg)
+        received_pcd = self.convert_msg_to_o3d_pcd(msg)
 
         if pcd_id in self.pcds_dict:
             full_pcd = None
