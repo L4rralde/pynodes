@@ -21,7 +21,7 @@ class FoundationModelNode(Node):
         self.kf_storage = KeyFrameStorage()
         self.input_chunk: AllocatedTorchImgChunk = AllocatedTorchImgChunk(slam_conf.CHUNK_SIZE)
         self.closing_chunk: AllocatedTorchImgChunk = AllocatedTorchImgChunk(2*slam_conf.CHUNK_OVERLAP)
-        self.model: VeggietSaladOmega = VeggietSaladOmega
+        self.model: VeggietSaladOmega = VeggietSaladOmega()
         self.chunk_cnt: int=0
         self.prev_kfids: List[int] = []
 
@@ -69,7 +69,7 @@ class FoundationModelNode(Node):
             for img in imgs
         ]
 
-        if self.input_chunk is None or self.closing_chunk is None:
+        if not self.input_chunk.is_initialized():
             self.input_chunk.set_img_shape(imgs[0].shape[-2:])
             self.closing_chunk.set_img_shape(imgs[0].shape[-2:])
 
@@ -103,6 +103,9 @@ class FoundationModelNode(Node):
                 "predictions": preds
             }
         )
+    
+    def on_closed_loop(self, msg: Message) ->  None:
+        pass
 
 class VprNode(FoundationModelNode):
     name="vpr"
