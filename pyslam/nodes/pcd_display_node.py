@@ -1,6 +1,6 @@
 import time
 import queue
-from typing import Dict
+from typing import Dict, List
 
 import open3d as o3d
 import numpy as np
@@ -16,7 +16,7 @@ class PointcloudNode(Node):
         super().__init__(node_id, inbox, outbound, stop_event)
         self.viz = None
         self.pcds_dict: Dict[str, object]= {}
-        self.cam_pose: np.ndarray = np.eye(4)
+        self.cam_poses: List[np.ndarray] = [np.eye(4)]
 
     def setup(self):
         self.subscribe("/cam/pose", self.on_cam_pose)
@@ -29,6 +29,8 @@ class PointcloudNode(Node):
         null_pcd = o3d.geometry.PointCloud()
         null_pcd.points = o3d.utility.Vector3dVector(np.zeros((0, 3))) # Vacía
         self.viz.add_geometry(null_pcd)
+        render_option = self.viz.get_render_option()
+        render_option.background_color = np.array([0.0, 0.0, 0.0])
         
     def apply_yaxis_rotation(self) -> None:
         view_ctrl = self.viz.get_view_control()
@@ -93,22 +95,24 @@ class PointcloudNode(Node):
             self.logger.info("Adding geometry")
             self.viz.add_geometry(received_pcd)
 
+        self.pcds_dict[pcd_id] = received_pcd
         self.logger.info("Updating window")
         #self.apply_yaxis_rotation()
-        self.update_view()
-        self.pcds_dict[pcd_id] = received_pcd
-        self.viz.poll_events()
-        self.viz.update_renderer()
+        for pose in self.cam_poses:
+            self.update_view(pose)
+            self.viz.poll_events()
+            self.viz.update_renderer()
+            time.sleep(0.010)
 
     def on_cam_pose(self, msg: Message) -> None:
         done = msg.payload.get('done', False)
         if done:
             return
-        self.cam_pose[:3] = msg.payload['pose'] # 4 times 4 matrix
+        self.cam_poses = msg.payload['pose'] # n4 times 4 matrix
 
-    def update_view(self) -> None:
-        pose = self.cam_pose  # T_world_cam
-
+    def update_view(self, in_pose: np.ndarray) -> None:
+        pose = np.eye(4)
+        pose[:3] = in_pose
         # Open3D expects world-to-camera extrinsic
         extrinsic = pose
 
