@@ -1,7 +1,6 @@
 import time
 import queue
-from typing import Dict
-import threading
+from typing import Dict, List
 
 import open3d as o3d
 import numpy as np
@@ -15,103 +14,57 @@ class PointcloudNode(Node):
 
     def __init__(self, node_id, inbox, outbound, stop_event):
         super().__init__(node_id, inbox, outbound, stop_event)
-
-        self.pcd_queue: queue.Queue = queue.Queue()
-        self.camera_lock: threading.Lock = threading.Lock()
-        
-        self.pcds_dict: Dict[str, object] = {}
-        self.cam_poses = []
-        
         self.viz = None
-        self.viz_thread = None
+        self.pcds_dict: Dict[str, object]= {}
+        self.cam_poses: List[np.ndarray] = [np.eye(4)]
 
     def setup(self):
         self.subscribe("/cam/pose", self.on_cam_pose)
         self.subscribe("/pointcloud", self.on_pcd)
-        
-        # Iniciar el hilo dedicado a la visualización
-        self.viz_thread = threading.Thread(target=self.viz_loop, daemon=True)
-        self.viz_thread.start()
-
-    def viz_loop(self):
-        """Ciclo principal de visualización que corre en su propio thread."""
         self.viz = o3d.visualization.Visualizer()
         self.viz.create_window(width=1280, height=720)
         self.setup_viz()
 
-        pose_idx = 0
-        current_poses = []
-
-        while not self.stop_event.is_set():
-            # 1. Extraer pointclouds de la cola y actualizar geometría
-            try:
-                # Procesar todos los pcds pendientes en este frame
-                while True:
-                    pcd_id, received_pcd = self.pcd_queue.get_nowait()
-                    
-                    if pcd_id in self.pcds_dict:
-                        self.pcds_dict[pcd_id] = received_pcd
-                        # Combinar pcds
-                        full_pcd = o3d.geometry.PointCloud()
-                        for pcd in self.pcds_dict.values():
-                            full_pcd += pcd
-                        
-                        # Open3D requiere actualizar la geometría explícitamente. 
-                        # Nota: update_geometry asume que el número de puntos no cambió. 
-                        # Si cambia, es mejor hacer clear_geometries() y add_geometry() o usar un contenedor fijo.
-                        self.viz.clear_geometries()
-                        self.viz.add_geometry(full_pcd)
-                    else:
-                        self.logger.info("Adding geometry")
-                        self.viz.add_geometry(received_pcd)
-                        self.pcds_dict[pcd_id] = received_pcd
-                        
-            except queue.Empty:
-                pass
-
-            # 2. Actualizar poses de la cámara de forma segura
-            with self.camera_lock:
-                if len(self.cam_poses) > 0:
-                    current_poses = self.cam_poses.copy()
-                    self.cam_poses.clear() # Limpiar para evitar reprocesar
-                    pose_idx = 0
-
-            # 3. Animar la cámara un paso por frame
-            if current_poses and pose_idx < len(current_poses):
-                self.update_view(current_poses[pose_idx])
-                pose_idx += 1
-                time.sleep(0.010) # Controlar la velocidad de la animación
-
-            # 4. Renderizar
-            self.viz.poll_events()
-            self.viz.update_renderer()
-
-        self.viz.destroy_window()
-
     def setup_viz(self) -> None:
         null_pcd = o3d.geometry.PointCloud()
-        null_pcd.points = o3d.utility.Vector3dVector(np.zeros((0, 3)))
+        null_pcd.points = o3d.utility.Vector3dVector(np.zeros((0, 3))) # Vacía
         self.viz.add_geometry(null_pcd)
         render_option = self.viz.get_render_option()
         render_option.background_color = np.array([0.0, 0.0, 0.0])
+        
+    def apply_yaxis_rotation(self) -> None:
+        view_ctrl = self.viz.get_view_control()
+        self.viz.reset_view_point()
+        theta = np.radians(180)  # 30-degree rotation
+        R_y = np.array([
+            [np.cos(theta), 0, np.sin(theta)],
+            [0,             1, 0],
+            [-np.sin(theta), 0, np.cos(theta)]
+        ])
 
-    def extract_msg_pcd_data(self, msg) -> Dict[str, np.ndarray]:
+        cam = view_ctrl.convert_to_pinhole_camera_parameters()
+
+        extrinsic = cam.extrinsic.copy()
+        extrinsic[:3, :3] = R_y
+        cam.extrinsic = extrinsic
+
+        view_ctrl.convert_from_pinhole_camera_parameters(cam)
+
+    def extract_msg_pcd_data(self, msg: Message) -> Dict[str, np.ndarray]:
         data = msg.payload
         shm = data.get('shm', False)
         if not shm:
-            return None, data['pcd_data']
+            return data['pcd_data']
 
         buff, pcd = AllocatedShmPcdData.attach(data['pcd_data'])
         return buff, pcd
 
-    def convert_msg_to_o3d_pcd(self, msg) -> object:
+    def convert_msg_to_o3d_pcd(self, msg: Message) -> object:
         self.logger.info(f"Receiving new pointcloud: {msg.payload['pcd_id']}")
-        buffer, pcd_data = self.extract_msg_pcd_data(msg)
-        
+        buffer, msg.payload['pcd_data'] = self.extract_msg_pcd_data(msg)
         self.logger.info("Converting pcd data into open3d pcd")
-        points = pcd_data['points']
-        colors = pcd_data.get('colors')
-        
+        points = msg.payload['pcd_data']['points']
+        colors = msg.payload['pcd_data']['colors']
         received_pcd = o3d.geometry.PointCloud()
         received_pcd.points = o3d.utility.Vector3dVector(points)
         if colors is not None:
@@ -120,34 +73,73 @@ class PointcloudNode(Node):
             buffer.close()
         return received_pcd
 
-    def on_pcd(self, msg) -> None:
-        """Callback liberado: solo convierte y encola, no bloquea."""
+    def on_pcd(self, msg: Message) -> None:
         data = msg.payload
-        if data.get('done', False):
+        done = data.get('done', False)
+        if done:
             self.finish()
             return
 
         pcd_id = data['pcd_id']
         received_pcd = self.convert_msg_to_o3d_pcd(msg)
-        
-        # Enviar al hilo de visualización
-        self.pcd_queue.put((pcd_id, received_pcd))
 
-    def on_cam_pose(self, msg) -> None:
-        if msg.payload.get('done', False):
+        if pcd_id in self.pcds_dict:
+            full_pcd = None
+            for pcd in self.pcds_dict.values():
+                if full_pcd is None:
+                    full_pcd = pcd
+                    continue
+                full_pcd += pcd
+            self.viz.update_geometry(full_pcd)
+        else:
+            self.logger.info("Adding geometry")
+            self.viz.add_geometry(received_pcd)
+
+        self.pcds_dict[pcd_id] = received_pcd
+        self.logger.info("Updating window")
+        #self.apply_yaxis_rotation()
+        for pose in self.cam_poses:
+            self.update_view(pose)
+            self.viz.poll_events()
+            self.viz.update_renderer()
+            time.sleep(0.010)
+
+    def on_cam_pose(self, msg: Message) -> None:
+        done = msg.payload.get('done', False)
+        if done:
             return
-        
-        with self.camera_lock:
-            self.cam_poses = msg.payload['pose']
+        self.cam_poses = msg.payload['pose'] # n4 times 4 matrix
 
     def update_view(self, in_pose: np.ndarray) -> None:
         pose = np.eye(4)
         pose[:3] = in_pose
+        # Open3D expects world-to-camera extrinsic
+        extrinsic = pose
 
         view_ctrl = self.viz.get_view_control()
         cam = view_ctrl.convert_to_pinhole_camera_parameters()
-        cam.extrinsic = pose
-        view_ctrl.convert_from_pinhole_camera_parameters(cam, allow_arbitrary=True)    
+
+        cam.extrinsic = extrinsic
+
+        view_ctrl.convert_from_pinhole_camera_parameters(
+            cam,
+            allow_arbitrary=True
+        )
+
+    def spin(self):
+            self.setup()
+            self.logger.info("Started")
+    
+            while not self.stop_event.is_set() and not self.done:
+                try:
+                    event = self.inbox.get(timeout=0.2)
+                    self._dispatch(event)
+                except queue.Empty:
+                    self.viz.poll_events()
+                    continue
+    
+            self.logger.info("Stopped")
+    
 
     def finish(self) -> None:
         self.viz.destroy_window()
