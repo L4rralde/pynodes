@@ -51,7 +51,7 @@ class AllocatedSharedMemoryNdarray:
         #self.shm.unlink()
 
     @staticmethod
-    def attach(metadata) -> np.ndarray:
+    def attach(metadata) -> tuple:
         shm = shared_memory.SharedMemory(
             name = metadata["name"]
         )
