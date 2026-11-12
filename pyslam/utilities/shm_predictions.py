@@ -7,7 +7,7 @@ import numpy as np
 from vggt_salad_slam.dtypes import Prediction
 
 
-DEF_MAX_SIZE = 4 * 1024 * 1024
+DEF_MAX_SIZE = 16 * 1024 * 1024
 
 
 class AllocatedSharedMemoryNdarray:
@@ -108,8 +108,16 @@ class AllocatedShmPrediction:
 
     @staticmethod
     def attach(metadata: Dict[str, Dict[str, Any]]) -> Prediction:
-        pred_dict = {
+        attached_data = {
             k: AllocatedSharedMemoryNdarray.attach(v)
-            for k,v in metadata.items()
+            for k, v in metadata.items()
         }
+        buffers = [v[0] for v in metadata.values()]
+        pred_dict ={
+            k: v[1].copy()
+            for k,v in attached_data.items()
+        }
+        for b in buffers:
+            b.close()
+
         return Prediction.from_dict(pred_dict)
