@@ -8,74 +8,31 @@ from pynodes import Node, Message
 import pyslam.conf as slam_conf
 from vggt_salad_slam.transforms.utils import to_ndarrays_for_pointcloud
 from vggt_salad_slam.dtypes import Prediction
+from pyslam.utilities.kf_storage import KeyFrameStorage
+from pyslam.utilities.allocate_data import AllocatedTorchImgChunk
+from pyslam.model.model import VeggietSaladOmega
 
 
 #FIXME: This node is not tested and some bugs are known.
 class FoundationModelNode(Node):
     name = "3dgfm"
-    class KeyFrameStorage:
-        def __init__(self):
-            self.kf_dict: Dict[torch.Tensor] = {}
-
-        def add(self, kf_id: int, img: torch.Tensor) -> None:
-            if kf_id in self.kf_dict.keys():
-                raise ValueError("Kf id already in storage")
-            self.kf_dict[kf_id] = img
-
-        def get(self, kf_id: int) -> torch.Tensor:
-            if not kf_id in self.kf_dict.keys():
-                raise RuntimeError(f"Unknown kf_id: {kf_id}")
-
-            return self.kf_dict[kf_id]
-
     def __init__(self, node_id, inbox, outbound, stop_event):
         super().__init__(node_id, inbox, outbound, stop_event)
-        self.kf_storage = FoundationModelNode.KeyFrameStorage()
-        self.input_chunk: torch.Tensor|None = None
-        self.closing_chunk: torch.Tensor|None = None
-        self.model: torch.nn.Module = None #self.load_model().eval().to('cuda')
+        self.kf_storage = KeyFrameStorage()
+        self.input_chunk: AllocatedTorchImgChunk = AllocatedTorchImgChunk(slam_conf.CHUNK_SIZE)
+        self.closing_chunk: AllocatedTorchImgChunk = AllocatedTorchImgChunk(2*slam_conf.CHUNK_OVERLAP)
+        self.model: VeggietSaladOmega = VeggietSaladOmega
         self.chunk_cnt: int=0
         self.prev_kfids: List[int] = []
 
     def setup(self):
-        self.subscribe("/video/chunks", self.on_chunk)
+        self.subscribe("/video/chunks", self.on_input)
         self.subscribe("/closed_loop/closing_chunk", self.on_closed_loop)
         self.advertise("/3dgfm/predictions")
         self.advertise("/vpr/descriptors")
         self.logger.info("Loading model...")
-        self.model = self.load_model().eval().to('cuda')
+        self.model.load_model(slam_conf.VPR_REPO_PATH, slam_conf.VGGT_OMEGA_CKPT)
         self.logger.info("Model loaded")
-
-    def model_prediction(self, images: torch.Tensor, extract_features: bool=True) -> Dict[str, np.ndarray]:
-        with torch.inference_mode():
-            predictions = self.model.forward(images)
-        
-        extrinsics, intrinsics = self.model.backbone.pose_encoding_to_extri_intri(
-            predictions["pose_enc"],
-            predictions["images"].shape[-2:],
-        )
-        predictions.pop("pose_enc")
-
-        predictions['extrinsic'] = extrinsics
-        predictions['intrinsic'] = intrinsics
-
-        for key, value in predictions.items():
-            if isinstance(value, torch.Tensor):
-                predictions[key] = value.cpu().numpy().squeeze(0)
-
-        if not extract_features:
-            predictions.pop('descriptor', None) #Skip computation if not required
-
-        return predictions
-
-    def load_model(self) -> torch.nn.Module:
-        model = torch.hub.load(
-            'L4rralde/Visual_Place_Recognition',
-            'vggto_s_pre',
-            slam_conf.VPR_REPO_PATH,
-            slam_conf.VGGT_OMEGA_CKPT
-        )
-        return model
 
     def finish(self) -> None:
         if self.done:
@@ -92,22 +49,13 @@ class FoundationModelNode(Node):
     def to_torch_img(self, img: np.ndarray) -> torch.Tensor:
         return torch.from_numpy(img).permute(2, 0, 1)/255.0
 
-    def initialize_input_tensors(self, img_shape: Tuple[int]) -> None:
-        h, w = img_shape
-        self.input_chunk = torch.zeros(
-            slam_conf.CHUNK_SIZE, 3, h, w
-        ).to('cuda')
-        self.closing_chunk = torch.zeros(
-            2*slam_conf.CHUNK_OVERLAP, 3, h, w
-        ).to('cuda')
-
     def append_chunks(self, kfids: List[int], imgs: List[torch.Tensor]) -> None:
         for kfid, img in zip(kfids, imgs):
             if kfid in self.prev_kfids:
                 continue
             self.kf_storage.add(kfid, img)
 
-    def on_chunk(self, msg: Message) -> None:
+    def on_input(self, msg: Message) -> None:
         if 'done' in msg.payload:
             self.finish()
             return
@@ -122,15 +70,13 @@ class FoundationModelNode(Node):
         ]
 
         if self.input_chunk is None or self.closing_chunk is None:
-            self.initialize_input_tensors(imgs[0].shape[-2:])
+            self.input_chunk.set_img_shape(imgs[0].shape[-2:])
+            self.closing_chunk.set_img_shape(imgs[0].shape[-2:])
 
-        for i, img in enumerate(imgs):
-            self.input_chunk[i] = img.to('cuda')
+        self.input_chunk.fill(imgs)
+        x = self.input_chunk.get()
 
-        x = self.input_chunk[:len(kfids)]
-
-        preds = self.model_prediction(x)
-        preds['ids'] = np.asarray(kfids)
+        preds = self.model.model_prediction(x, kfids)
 
         chunk_id = self.chunk_cnt
         self.prev_kfids = kfids
@@ -158,36 +104,6 @@ class FoundationModelNode(Node):
             }
         )
 
-    def on_closed_loop(self, msg: Message) -> None:
-        done =msg.payload.get("done", False)
-        if done:
-            self.finish()
-            return
-        kfids = msg.payload['kf_ids']
-        for i, kf_id in enumerate(kfids):
-            self.closing_chunk[i] = self.kf_storage.get(kf_id).to('cuda')
-
-        x = self.closing_chunk[:len(kfids)]
-        preds = self.model_prediction(x)
-        preds['ids'] = kfids
-
-        preds = Prediction.from_dict(preds)
-        self.publish(
-            "/3dgfm/predictions",
-            {
-                "type": "loop_closure",
-                'chunk_id': None,
-                'kf_ids': kfids,
-                'predictions': preds,
-                'edge_info': {
-                    'sim': msg.payload['sim'],
-                    'parent': msg.payload['parent'],
-                    'child': msg.payload['child']
-                }
-            }
-        )
-
-
 class VprNode(FoundationModelNode):
     name="vpr"
     def setup(self):
@@ -202,7 +118,6 @@ class VprNode(FoundationModelNode):
             T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
             T.Resize(size=[322, 322], antialias=True),
         ])
-
 
     def on_chunk(self, msg):
         if 'done' in msg.payload:
