@@ -50,7 +50,7 @@ class KeyFrameNode(Node):
         while not self.stop_event.is_set():
             img = video_producer.read()
             if img is None:
-                self.publish_chunk(img_chunk, chunk_kfids)
+                self.publish_chunk(img_chunk, chunk_kfids, chunk_cnt)
                 self.finish()
                 break
 
@@ -70,7 +70,7 @@ class KeyFrameNode(Node):
             self.save_image(kf_id, img)
 
             if len(chunk_kfids) == slam_conf.CHUNK_SIZE:
-                self.publish_chunk(img_chunk, chunk_kfids)
+                self.publish_chunk(img_chunk, chunk_kfids, chunk_cnt)
 
                 chunk_kfids = chunk_kfids[-slam_conf.CHUNK_OVERLAP:]
                 img_chunk = img_chunk[-slam_conf.CHUNK_OVERLAP:]
