@@ -77,6 +77,9 @@ class LocalAlignNode(Node):
             return
 
         data['predictions'] = self.extract_msg_predictions(msg)
+        chunk_id = data['chunk_id']
+        self.logger.info(f"Received prediction with id: {chunk_id}")
+
         pred_type = data['type']
         if pred_type == 'measurement':
             self.on_adjacent_prediction(msg)
@@ -94,7 +97,10 @@ class LocalAlignNode(Node):
             child_preds = msg.payload['predictions']
             self.logger.info(f"Parent ids: {parent_preds.ids}")
             self.logger.info(f"Child ids: {child_preds.ids}")
+            start = time.perf_counter()
             aligner = self.compute_align(parent_preds, child_preds)
+            end = time.perf_counter()
+            self.logger.info(f"Aligning computation took: {end - start:.4f} s")
             parent_acc_pose = self.accumulated_transforms[parent_id]
             child_acc_pose = parent_acc_pose @ aligner
             self.accumulated_transforms[child_id] = child_acc_pose
@@ -104,7 +110,10 @@ class LocalAlignNode(Node):
         pose = self.accumulated_transforms[chunk_id]
         preds = self.predictions_storage[chunk_id]
         global_preds = pose(preds)
+        start = time.perf_counter()
         pcd_data = to_ndarrays_for_pointcloud(global_preds, lower_p=60)
+        end = time.perf_counter()
+        self.logger.info(f"Pointcloud array generation took {end - start:.4f} s")
         first_cam_pose = global_preds.extrinsic[0]
         self.publish(
             '/cam/pose',
