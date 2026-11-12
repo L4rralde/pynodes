@@ -12,7 +12,6 @@ from pyslam.preprocessing import vggto as vggto_preprocess
 from pyslam.video import TimedVideoPublisher
 from pyslam.keyframes import FrameTracker
 from pyslam import conf as slam_conf
-from pyslam.utilities.allocate_data import AllocatedNumpyImgChunk
 
 
 class KeyFrameNode(Node):
@@ -42,8 +41,8 @@ class KeyFrameNode(Node):
         kf_count = 0
 
         chunk_kfids = []
-        img_chunk = AllocatedNumpyImgChunk()
-        #time.sleep(20)
+        img_chunk = []
+        time.sleep(20)
 
         while not self.stop_event.is_set():
             img = video_producer.read()
@@ -53,7 +52,13 @@ class KeyFrameNode(Node):
                     "/video/chunks",
                     {
                         "kf_ids": chunk_kfids,
-                        "imgs": img_chunk.get(),
+                        "imgs": img_chunk,
+                    }
+                )
+                self.publish(
+                    "/video/chunks",
+                    {
+                        "done": True
                     }
                 )
                 break
@@ -69,8 +74,6 @@ class KeyFrameNode(Node):
             kf_count += 1
 
             chunk_kfids.append(kf_id)
-            if not img_chunk.is_initialized():
-                img_chunk.set_img_shape(img.shape[:2])
             img_chunk.append(img)
 
             self.save_image(kf_id, img)
@@ -81,22 +84,14 @@ class KeyFrameNode(Node):
                     "/video/chunks",
                     {
                         "kf_ids": chunk_kfids,
-                        "imgs": img_chunk.get(),
+                        "imgs": img_chunk,
                     }
                 )
 
                 chunk_kfids = chunk_kfids[-slam_conf.CHUNK_OVERLAP:]
-                overlapping_imgs = [
-                    img_chunk[i]
-                    for i in range(slam_conf.CHUNK_SIZE - slam_conf.CHUNK_OVERLAP, slam_conf.CHUNK_SIZE)
-                ]
-                img_chunk.flush()
-                for img in overlapping_imgs:
-                    img_chunk.append(img)
-                #img_chunk = img_chunk[-slam_conf.CHUNK_OVERLAP:]
+                img_chunk = img_chunk[-slam_conf.CHUNK_OVERLAP:]
 
         video_producer.release()
-        self.finish()
 
     def process_img(self, img: np.ndarray) -> np.ndarray:
         h, w = img.shape[:2]
@@ -118,11 +113,3 @@ class KeyFrameNode(Node):
 
     def save_image(self, kfid: int, img: np.ndarray) -> None:
         Image.fromarray(img).save(f"./keyframes/{kfid}.png")
-
-    def finish(self) -> None:
-        self.publish(
-            "/video/chunks",
-            {
-                "done": True
-            }
-        )
