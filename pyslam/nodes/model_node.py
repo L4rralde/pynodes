@@ -94,6 +94,7 @@ class FoundationModelNode(Node):
         self.chunk_cnt += 1
 
         descriptors = preds.pop('descriptor')
+        self.logger.info(f"Publishing descriptors with id: {chunk_id}")
         self.publish(
             "/vpr/descriptors",
             {
@@ -102,9 +103,9 @@ class FoundationModelNode(Node):
                 "descriptors": descriptors
             }
         )
-        self.logger.info(f"Publishing descriptors of chunk_id: {self.chunk_cnt} with ids: {kfids}")
-
         preds = Prediction.from_dict(preds)
+
+        self.logger.info(f"Publishing predictions with id: {chunk_id}")
         self.publish(
             "/3dgfm/predictions",
             {
