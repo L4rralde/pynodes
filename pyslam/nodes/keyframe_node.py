@@ -23,7 +23,7 @@ class KeyFrameNode(Node):
         self.video_src_path = video_src_path
         self.tgt_aspect_ratio: float|None = None
         self.tgt_size: Tuple[int]|None = None
-        self.shm_message = AllocatedSharedMemoryNdarray("keyframes")
+        self.shm_message = AllocatedSharedMemoryNdarray("keyframes", max_num_bytes=512*512*4*slam_conf.CHUNK_SIZE)
 
     def setup(self):
         self.advertise("/video/chunks")
