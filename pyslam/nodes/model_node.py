@@ -42,7 +42,6 @@ class FoundationModelNode(Node):
         self.subscribe("/closed_loop/closing_chunk", self.on_closed_loop)
         self.advertise("/3dgfm/predictions")
         self.advertise("/vpr/descriptors")
-        self.advertise("/pointcloud")
         self.logger.info("Loading model...")
         self.model = self.load_model().eval().to('cuda')
         self.logger.info("Model loaded")
@@ -89,12 +88,6 @@ class FoundationModelNode(Node):
                 "done": True
             }
         )
-        self.publish(
-            "/pointcloud",
-            {
-                "done": True
-            }
-        )
 
     def to_torch_img(self, img: np.ndarray) -> torch.Tensor:
         return torch.from_numpy(img).permute(2, 0, 1)/255.0
@@ -137,6 +130,7 @@ class FoundationModelNode(Node):
         x = self.input_chunk[:len(kfids)]
 
         preds = self.model_prediction(x)
+        preds['ids'] = np.asarray(kfids)
 
         chunk_id = self.chunk_cnt
         self.prev_kfids = kfids
@@ -155,25 +149,36 @@ class FoundationModelNode(Node):
 
         preds = Prediction.from_dict(preds)
         self.publish(
-            "/pointcloud",
-            to_ndarrays_for_pointcloud(preds)
+            "/3dgfm/predictions",
+            {
+                "type": "measurement",
+                "chunk_id": chunk_id,
+                "kf_ids": kfids,
+                "predictions": preds
+            }
         )
 
     def on_closed_loop(self, msg: Message) -> None:
+        done =msg.payload.get("done", False)
+        if done:
+            self.finish()
+            return
         kfids = msg.payload['kf_ids']
         for i, kf_id in enumerate(kfids):
             self.closing_chunk[i] = self.kf_storage.get(kf_id).to('cuda')
 
         x = self.closing_chunk[:len(kfids)]
-        predictions = self.model_prediction(x)
-        return 
+        preds = self.model_prediction(x)
+        preds['ids'] = kfids
+
+        preds = Prediction.from_dict(preds)
         self.publish(
             "/3dgfm/predictions",
             {
                 "type": "loop_closure",
                 'chunk_id': None,
                 'kf_ids': kfids,
-                'predictions': predictions,
+                'predictions': preds,
                 'edge_info': {
                     'sim': msg.payload['sim'],
                     'parent': msg.payload['parent'],

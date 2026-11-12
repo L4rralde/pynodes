@@ -42,6 +42,7 @@ class KeyFrameNode(Node):
 
         chunk_kfids = []
         img_chunk = []
+        time.sleep(20)
 
         while not self.stop_event.is_set():
             img = video_producer.read()
