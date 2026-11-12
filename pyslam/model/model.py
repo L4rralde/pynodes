@@ -1,4 +1,4 @@
-from typing import List, Tuple
+from typing import List, Dict
 
 import torch
 import torchvision.transforms.v2 as T
@@ -8,19 +8,16 @@ import pyslam.conf as slam_conf
 
 
 class VeggietSaladOmega:
-    def __init__(self, vpr_repo_path: str, vggt_omega_ckpt: str):
-        self.model = torch.nn.Module|None = None
-        self.vpr_repo_path = vpr_repo_path
-        self.ckpt_path = vggt_omega_ckpt
+    def __init__(self):
+        self.model: torch.nn.Module|None = None
 
-    def load_model(self, vpr_repo_path: str, ckpt_path: str) -> torch.nn.Module:
-        model = torch.hub.load(
+    def load_model(self, vpr_repo_path: str, ckpt_path: str) -> None:
+        self.model = torch.hub.load(
             'L4rralde/Visual_Place_Recognition',
             'vggto_s_pre',
             vpr_repo_path,
             ckpt_path
-        )
-        return model
+        ).eval().to('cuda')
 
     def model_prediction(self, images: torch.Tensor, kfids: List[int]=[], extract_features: bool=True) -> Dict[str, np.ndarray]:
         with torch.inference_mode():
