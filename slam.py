@@ -114,11 +114,10 @@ class LocalAlignNode(Node):
         self.logger.info("Extracting pointcloud data")
         pcd_data = to_ndarrays_for_pointcloud(global_preds, lower_p=60)
 
-        first_cam_pose = global_preds.extrinsic[0]
         self.publish(
             '/cam/pose',
             {
-                'pose': first_cam_pose
+                'pose': global_preds.extrinsic
             }
         )
         self.publish_pcd(chunk_id, pcd_data)
