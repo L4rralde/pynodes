@@ -23,6 +23,7 @@ from pyslam.nodes import (
     FoundationModelNode,
     PointcloudNode
 )
+from pyslam.utilities.shm_predictions import AllocatedShmPrediction
 
 #TODO: Include as a thread in the FoundationModelNode
 class LocalAlignNode(Node):
@@ -62,6 +63,12 @@ class LocalAlignNode(Node):
     def get_predictions(self, pred_id: int) -> Prediction:
         return self.predictions_storage[pred_id]
 
+    def extract_msg_predictions(self, msg: Message) -> Prediction:
+        shm = msg.payload.get('shm', False)
+        if not shm:
+            return msg.payload['predictions']
+        return AllocatedShmPrediction.attach(msg.payload['predictions'])
+
     def on_predictions(self, msg: Message) -> None:
         data = msg.payload
         done = data.get("done", False)
@@ -69,6 +76,7 @@ class LocalAlignNode(Node):
             self.finish()
             return
 
+        data['predictions'] = self.extract_msg_predictions(msg)
         pred_type = data['type']
         if pred_type == 'measurement':
             self.on_adjacent_prediction(msg)

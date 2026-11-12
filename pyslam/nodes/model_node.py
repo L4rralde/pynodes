@@ -10,7 +10,10 @@ from vggt_salad_slam.transforms.utils import to_ndarrays_for_pointcloud
 from vggt_salad_slam.dtypes import Prediction
 from pyslam.utilities.kf_storage import KeyFrameStorage
 from pyslam.utilities.allocate_data import AllocatedTorchImgChunk
-from pyslam.utilities.shm_predictions import AllocatedSharedMemoryNdarray
+from pyslam.utilities.shm_predictions import(
+    AllocatedSharedMemoryNdarray,
+    AllocatedShmPrediction
+)
 from pyslam.model.model import VeggietSaladOmega
 
 
@@ -25,6 +28,7 @@ class FoundationModelNode(Node):
         self.model: VeggietSaladOmega = VeggietSaladOmega()
         self.chunk_cnt: int=0
         self.prev_kfids: List[int] = []
+        self.shm_prediction_o = AllocatedShmPrediction()
 
     def setup(self):
         self.subscribe("/video/chunks", self.on_input)
@@ -63,6 +67,19 @@ class FoundationModelNode(Node):
 
         shm, imgs = AllocatedSharedMemoryNdarray.attach(msg.payload['imgs'])
         return (imgs, shm)
+
+    def publish_predictions(self, chunk_id: int, kfids: List[int], preds: Prediction) -> None:
+        self.shm_prediction_o.fill(preds)
+        self.publish(
+            "/3dgfm/predictions",
+            {
+                "type": "measurement",
+                "chunk_id": chunk_id,
+                "kf_ids": kfids,
+                "predictions": self.shm_prediction_o.get_metadata(),
+                "shm": True
+            }
+        )
 
     def on_input(self, msg: Message) -> None:
         if 'done' in msg.payload:
@@ -106,14 +123,10 @@ class FoundationModelNode(Node):
         preds = Prediction.from_dict(preds)
 
         self.logger.info(f"Publishing predictions with id: {chunk_id}")
-        self.publish(
-            "/3dgfm/predictions",
-            {
-                "type": "measurement",
-                "chunk_id": chunk_id,
-                "kf_ids": kfids,
-                "predictions": preds
-            }
+        self.publish_predictions(
+            chunk_id,
+            kfids,
+            preds
         )
     
     def on_closed_loop(self, msg: Message) ->  None:
