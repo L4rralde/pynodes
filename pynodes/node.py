@@ -3,6 +3,7 @@ from multiprocessing.synchronize import Event as EventClass
 from collections import defaultdict
 from typing import Callable, Any
 import logging
+import time
 
 from .message import Message
 
@@ -17,6 +18,11 @@ class ColoredFormatter(logging.Formatter):
     }
 
     RESET = "\033[0m"
+
+    def formatTime(self, record, datefmt=None):
+        timestamp = time.strftime("%H:%M:%S", self.converter(record.created))
+        milliseconds = int(record.msecs)
+        return f"{timestamp}.{milliseconds:03d}"
 
     def format(self, record):
         color = self.COLORS.get(record.levelname, "")
@@ -51,7 +57,7 @@ class Node:
             handler = logging.StreamHandler()
 
             formatter = ColoredFormatter(
-                "[%(node_name)s][%(levelname)s] %(message)s"
+                "%(asctime)s [%(node_name)s][%(levelname)s] %(message)s"
             )
 
             handler.setFormatter(formatter)
