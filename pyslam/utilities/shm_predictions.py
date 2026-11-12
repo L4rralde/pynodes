@@ -23,7 +23,7 @@ class AllocatedSharedMemoryNdarray:
         self.metadata: Dict[str, Any] = {}
 
     def fill(self, array: np.ndarray) -> None:
-        if array.nbytes >= self.max_num_bytes:
+        if array.nbytes > self.max_num_bytes:
             raise RuntimeError(f"{self.name} shm array exceeded num of bytes")
         self.metadata = {
             "name": self.name,
@@ -34,11 +34,20 @@ class AllocatedSharedMemoryNdarray:
         self.shared_array = np.ndarray(
             array.shape,
             dtype=array.dtype,
-            buffer=self.shared_array
+            buffer=self.shm.buf
         )
+        self.shared_array[:] = array
 
     def get_metadata(self) -> Dict[str, Any]:
         return self.metadata
+
+    def release(self) -> None:
+        if self.shared_array is not None:
+            del self.shared_array
+            self.shared_array = None
+
+        self.shm.close()
+        #self.shm.unlink()
 
     @staticmethod
     def attach(metadata) -> np.ndarray:
@@ -52,7 +61,7 @@ class AllocatedSharedMemoryNdarray:
             buffer=shm.buf
         )
 
-        return array
+        return shm, array
 
 
 class AllocatedShmPrediction:

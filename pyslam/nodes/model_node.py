@@ -10,6 +10,7 @@ from vggt_salad_slam.transforms.utils import to_ndarrays_for_pointcloud
 from vggt_salad_slam.dtypes import Prediction
 from pyslam.utilities.kf_storage import KeyFrameStorage
 from pyslam.utilities.allocate_data import AllocatedTorchImgChunk
+from pyslam.utilities.shm_predictions import AllocatedSharedMemoryNdarray
 from pyslam.model.model import VeggietSaladOmega
 
 
@@ -55,19 +56,29 @@ class FoundationModelNode(Node):
                 continue
             self.kf_storage.add(kfid, img)
 
+    def get_msg_imgs(self, msg: Message) -> np.ndarray:
+        shm = msg.payload.get('shm', False)
+        if not shm:
+            return (msg.payload['imgs'], None)
+
+        shm, imgs = AllocatedSharedMemoryNdarray.attach(msg.payload['imgs'])
+        return (imgs, shm)
+
     def on_input(self, msg: Message) -> None:
         if 'done' in msg.payload:
             self.finish()
             return
 
         kfids = msg.payload['kf_ids']
-        imgs = msg.payload['imgs']
+        imgs, shm = self.get_msg_imgs(msg)
         self.logger.info(f"Received chunk with kfids: {kfids}")
 
         imgs = [
             self.to_torch_img(img)
             for img in imgs
         ]
+        if shm is not None:
+            shm.close()
 
         if not self.input_chunk.is_initialized():
             self.input_chunk.set_img_shape(imgs[0].shape[-2:])

@@ -1,4 +1,4 @@
-from typing import Tuple
+from typing import Tuple, List
 from pynodes import Node
 import time
 import os
@@ -12,6 +12,7 @@ from pyslam.preprocessing import vggto as vggto_preprocess
 from pyslam.video import TimedVideoPublisher
 from pyslam.keyframes import FrameTracker
 from pyslam import conf as slam_conf
+from pyslam.utilities.shm_predictions import AllocatedSharedMemoryNdarray
 
 
 class KeyFrameNode(Node):
@@ -22,6 +23,7 @@ class KeyFrameNode(Node):
         self.video_src_path = video_src_path
         self.tgt_aspect_ratio: float|None = None
         self.tgt_size: Tuple[int]|None = None
+        self.shm_message = AllocatedSharedMemoryNdarray("keyframes")
 
     def setup(self):
         self.advertise("/video/chunks")
@@ -48,19 +50,8 @@ class KeyFrameNode(Node):
             img = video_producer.read()
             if img is None:
                 self.logger.info(f"Publishing chunk with kfids: {chunk_kfids}")
-                self.publish(
-                    "/video/chunks",
-                    {
-                        "kf_ids": chunk_kfids,
-                        "imgs": img_chunk,
-                    }
-                )
-                self.publish(
-                    "/video/chunks",
-                    {
-                        "done": True
-                    }
-                )
+                self.publish_chunk(img_chunk, chunk_kfids)
+                self.finish()
                 break
 
             count += 1
@@ -80,18 +71,13 @@ class KeyFrameNode(Node):
 
             if len(chunk_kfids) == slam_conf.CHUNK_SIZE:
                 self.logger.info(f"Publishing chunk with kfids: {chunk_kfids}")
-                self.publish(
-                    "/video/chunks",
-                    {
-                        "kf_ids": chunk_kfids,
-                        "imgs": img_chunk,
-                    }
-                )
+                self.publish_chunk(img_chunk, chunk_kfids)
 
                 chunk_kfids = chunk_kfids[-slam_conf.CHUNK_OVERLAP:]
                 img_chunk = img_chunk[-slam_conf.CHUNK_OVERLAP:]
 
         video_producer.release()
+        self.finish()
 
     def process_img(self, img: np.ndarray) -> np.ndarray:
         h, w = img.shape[:2]
@@ -113,3 +99,24 @@ class KeyFrameNode(Node):
 
     def save_image(self, kfid: int, img: np.ndarray) -> None:
         Image.fromarray(img).save(f"./keyframes/{kfid}.png")
+
+    def publish_chunk(self, img_list: List[np.ndarray], kfids: List[int]) -> None:
+        img_array = np.asarray(img_list)
+        self.shm_message.fill(img_array)
+        self.publish(
+            "/video/chunks",
+            {
+                "shm": True,
+                "kf_ids": kfids,
+                "imgs": self.shm_message.get_metadata(),
+            }
+        )
+
+    def finish(self) -> None:
+        self.publish(
+            "/video/chunks",
+            {
+                "done": True
+            }
+        )
+        self.shm_message.release()
