@@ -54,15 +54,21 @@ class PointcloudNode(Node):
         if not shm:
             return data['pcd_data']
 
-        return AllocatedShmPcdData.attach(data['pcd_data'])
+        buff, pcd = AllocatedShmPcdData.attach(data['pcd_data'])
+        return buff, pcd
 
     def convert_msg_to_o3d_pcd(self, msg: Message) -> object:
+        self.logger.info(f"Receiving new pointcloud: {msg.payload['pcd_id']}")
+        buffer, msg.payload['pcd_data'] = self.extract_msg_pcd_data(msg)
+        self.logger.info("Converting pcd data into open3d pcd")
         points = msg.payload['pcd_data']['points']
         colors = msg.payload['pcd_data']['colors']
         received_pcd = o3d.geometry.PointCloud()
         received_pcd.points = o3d.utility.Vector3dVector(points)
         if colors is not None:
             received_pcd.colors = o3d.utility.Vector3dVector(colors)
+        if buffer is not None:
+            buffer.close()
         return received_pcd
 
     def on_pcd(self, msg: Message) -> None:
@@ -73,9 +79,6 @@ class PointcloudNode(Node):
             return
 
         pcd_id = data['pcd_id']
-        self.logger.info(f"Receiving new pointcloud: {pcd_id}")
-        data['pcd_data'] = self.extract_msg_pcd_data(msg)
-        self.logger.info("Converting pcd data into open3d pcd")
         received_pcd = self.convert_msg_to_o3d_pcd(msg)
 
         if pcd_id in self.pcds_dict:

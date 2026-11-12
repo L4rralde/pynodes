@@ -5,6 +5,15 @@ import numpy as np
 from .sharray import AllocatedSharedMemoryNdarray
 
 
+class BufferData:
+        def __init__(self, buffers):
+            self.buffers = buffers
+
+        def close(self) -> None:
+            for b in self.buffers:
+                b.close()
+
+
 class AllocatedShmPcdData:
     def __init__(self):
         self.points = AllocatedSharedMemoryNdarray("pointcloud_points")
@@ -34,7 +43,4 @@ class AllocatedShmPcdData:
             for k,v in attached_data.items()
         }
 
-        for b in buffers:
-            b.close()
-
-        return data_dict
+        return BufferData(buffers), data_dict
