@@ -25,6 +25,7 @@ from pyslam.nodes import (
 )
 from pyslam.utilities.shmem import AllocatedShmPcdData, AllocatedShmPrediction
 
+
 #TODO: Include as a thread in the FoundationModelNode
 class LocalAlignNode(Node):
     name = "local_align"
@@ -77,9 +78,9 @@ class LocalAlignNode(Node):
             self.finish()
             return
 
+        self.logger.info(f"Received prediction with id: {chunk_id}")
         data['predictions'] = self.extract_msg_predictions(msg)
         chunk_id = data['chunk_id']
-        self.logger.info(f"Received prediction with id: {chunk_id}")
 
         pred_type = data['type']
         if pred_type == 'measurement':
@@ -98,10 +99,8 @@ class LocalAlignNode(Node):
             child_preds = msg.payload['predictions']
             self.logger.info(f"Parent ids: {parent_preds.ids}")
             self.logger.info(f"Child ids: {child_preds.ids}")
-            start = time.perf_counter()
             aligner = self.compute_align(parent_preds, child_preds)
-            end = time.perf_counter()
-            self.logger.info(f"Aligning computation took: {end - start:.4f} s")
+            self.logger.info("Finished aligning")
             parent_acc_pose = self.accumulated_transforms[parent_id]
             child_acc_pose = parent_acc_pose @ aligner
             self.accumulated_transforms[child_id] = child_acc_pose
@@ -111,10 +110,10 @@ class LocalAlignNode(Node):
         pose = self.accumulated_transforms[chunk_id]
         preds = self.predictions_storage[chunk_id]
         global_preds = pose(preds)
-        start = time.perf_counter()
+
+        self.logger.info("Extracting pointcloud data")
         pcd_data = to_ndarrays_for_pointcloud(global_preds, lower_p=60)
-        end = time.perf_counter()
-        self.logger.info(f"Pointcloud array generation took {end - start:.4f} s")
+
         first_cam_pose = global_preds.extrinsic[0]
         self.publish(
             '/cam/pose',
@@ -125,6 +124,7 @@ class LocalAlignNode(Node):
         self.publish_pcd(chunk_id, pcd_data)
 
     def publish_pcd(self, chunk_id: int, pcd_data: Dict[str, np.ndarray]) -> None:
+        self.logger.info(f"Publishing pointcloud for prediction with id: {chunk_id}")
         self.pcd_shmem.fill(**pcd_data)
         self.publish(
             "/pointcloud",
@@ -136,28 +136,7 @@ class LocalAlignNode(Node):
         )
 
     def on_closed_loop_prediction(self, msg: Message) -> None:
-        data = msg.payload
-
-        connecting_preds = data['predictions']
-        parent_id = data['edge_info']['parent']
-        parent_preds = self.get_predictions(parent_id)
-        child_id = data['edge_info']['child']
-        child_preds = self.get_predictions(child_preds)
-
-        aligner = (
-            self.compute_align(parent_preds, connecting_preds) @
-            self.compute_align(connecting_preds, child_preds)
-        )
-
-        self.publish(
-            '/graph/measurement',
-            {
-                'type': 'loop_closure',
-                'parent_id': parent_id,
-                'child_id': child_id,
-                'meas': aligner
-            }
-        )
+        pass
 
     def finish(self) -> None:
         self.done = True
@@ -180,7 +159,6 @@ class LocalAlignNode(Node):
         parent_preds: Prediction,
         child_preds: Prediction
     ) -> matt.MatrixTransform:
-
         aligner = vggtlong_est_scenes_transform(
             child_preds,
             parent_preds

@@ -75,6 +75,7 @@ class PointcloudNode(Node):
         pcd_id = data['pcd_id']
         self.logger.info(f"Receiving new pointcloud: {pcd_id}")
         data['pcd_data'] = self.extract_msg_pcd_data(msg)
+        self.logger.info("Converting pcd data into open3d pcd")
         received_pcd = self.convert_msg_to_o3d_pcd(msg)
 
         if pcd_id in self.pcds_dict:
@@ -86,9 +87,10 @@ class PointcloudNode(Node):
                 full_pcd += pcd
             self.viz.update_geometry(full_pcd)
         else:
-            self.viz.add_geometry(received_pcd)
             self.logger.info("Adding geometry")
+            self.viz.add_geometry(received_pcd)
 
+        self.logger.info("Updating window")
         #self.apply_yaxis_rotation()
         self.update_view()
         self.pcds_dict[pcd_id] = received_pcd

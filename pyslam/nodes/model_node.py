@@ -12,7 +12,8 @@ from pyslam.utilities.kf_storage import KeyFrameStorage
 from pyslam.utilities.allocate_data import AllocatedTorchImgChunk
 from pyslam.utilities.shmem import(
     AllocatedShmImage,
-    AllocatedShmPrediction
+    AllocatedShmPrediction,
+    AllocatedSharedMemoryNdarray
 )
 from pyslam.model.model import VeggietSaladOmega
 
@@ -65,8 +66,8 @@ class FoundationModelNode(Node):
         if not shm:
             return (msg.payload['imgs'], None)
 
-        imgs = AllocatedShmImage.attach(msg.payload['imgs'])
-        return imgs
+        buff, imgs = AllocatedSharedMemoryNdarray.attach(msg.payload['imgs'])
+        return buff, imgs
 
     def publish_predictions(self, chunk_id: int, kfids: List[int], preds: Prediction) -> None:
         self.shm_prediction_o.fill(preds)
@@ -87,13 +88,15 @@ class FoundationModelNode(Node):
             return
 
         kfids = msg.payload['kf_ids']
-        imgs = self.get_msg_imgs(msg)
+        buff, imgs = self.get_msg_imgs(msg)
         self.logger.info(f"Received chunk with kfids: {kfids}")
 
         imgs = [
             self.to_torch_img(img)
             for img in imgs
         ]
+
+        buff.close()
 
         if not self.input_chunk.is_initialized():
             self.input_chunk.set_img_shape(imgs[0].shape[-2:])
@@ -102,7 +105,9 @@ class FoundationModelNode(Node):
         self.input_chunk.fill(imgs)
         x = self.input_chunk.get()
 
+        self.logger.info("Calling forward pass")
         preds = self.model.model_prediction(x, kfids)
+        self.logger.info("Finished forward pass")
 
         chunk_id = self.chunk_cnt
         self.prev_kfids = kfids
@@ -129,6 +134,7 @@ class FoundationModelNode(Node):
     
     def on_closed_loop(self, msg: Message) ->  None:
         pass
+
 
 class VprNode(FoundationModelNode):
     name="vpr"

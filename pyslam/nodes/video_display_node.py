@@ -1,7 +1,7 @@
 import cv2
 
 from pynodes import Node, Message
-from pyslam.utilities.shmem import AllocatedShmImage
+from pyslam.utilities.shmem import AllocatedSharedMemoryNdarray
 
 
 class ShowVideo(Node):
@@ -15,15 +15,19 @@ class ShowVideo(Node):
             self.done = True
             cv2.destroyAllWindows()
             return
-        self.logger.info(f"Received kfids: {msg.payload['kf_ids']}")
+        #self.logger.info(f"Received kfids: {msg.payload['kf_ids']}")
         shm = msg.payload.get("shm", False)
 
+        buffer = None
         if shm:
-            imgs = AllocatedShmImage.attach(msg.payload['imgs'])
+            buffer, imgs = AllocatedSharedMemoryNdarray.attach(msg.payload['imgs'])
         else:
             imgs = msg.payload['imgs']
         img = imgs[-1]
         if img is not None:
             cv2.imshow("frames", cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
             cv2.waitKey(1)
+
+        if buffer is not None:
+            buffer.close()
 
