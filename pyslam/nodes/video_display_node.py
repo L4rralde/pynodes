@@ -23,8 +23,8 @@ class ShowVideo(Node):
             buffer, imgs = AllocatedSharedMemoryNdarray.attach(msg.payload['imgs'])
         else:
             imgs = msg.payload['imgs']
-        img = imgs[-1]
-        if img is not None:
+
+        for img in imgs:
             cv2.imshow("frames", cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
             cv2.waitKey(1)
 
