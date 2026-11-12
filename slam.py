@@ -78,9 +78,9 @@ class LocalAlignNode(Node):
             self.finish()
             return
 
+        chunk_id = data['chunk_id']
         self.logger.info(f"Received prediction with id: {chunk_id}")
         data['predictions'] = self.extract_msg_predictions(msg)
-        chunk_id = data['chunk_id']
 
         pred_type = data['type']
         if pred_type == 'measurement':
