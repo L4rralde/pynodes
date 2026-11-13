@@ -31,24 +31,6 @@ class PointcloudNode(Node):
         self.viz.add_geometry(null_pcd)
         render_option = self.viz.get_render_option()
         render_option.background_color = np.array([0.0, 0.0, 0.0])
-        
-    def apply_yaxis_rotation(self) -> None:
-        view_ctrl = self.viz.get_view_control()
-        self.viz.reset_view_point()
-        theta = np.radians(180)  # 30-degree rotation
-        R_y = np.array([
-            [np.cos(theta), 0, np.sin(theta)],
-            [0,             1, 0],
-            [-np.sin(theta), 0, np.cos(theta)]
-        ])
-
-        cam = view_ctrl.convert_to_pinhole_camera_parameters()
-
-        extrinsic = cam.extrinsic.copy()
-        extrinsic[:3, :3] = R_y
-        cam.extrinsic = extrinsic
-
-        view_ctrl.convert_from_pinhole_camera_parameters(cam)
 
     def extract_msg_pcd_data(self, msg: Message) -> Dict[str, np.ndarray]:
         data = msg.payload
