@@ -37,7 +37,7 @@ class LocalAlignNode(Node):
         self.accumulated_transforms: Dict[int, matt.MatrixTransform] = {
             0: self._aligner_type()
         }
-        self.pcd_shmem = AllocatedShmPcdData()
+        self.pcd_shmem = AllocatedShmPcdData(slam_conf.CHUNK_SIZE)
 
     def setup(self) -> None:
         self.advertise('/graph/measurement')
