@@ -11,6 +11,17 @@ DEF_MAX_SIZE = 32 * 1024 * 1024
 
 class AllocatedSharedMemoryNdarray:
     def __init__(self, name: str, max_num_bytes: int=DEF_MAX_SIZE):
+        try:
+            existing_shm = shared_memory.SharedMemory(
+                name=name,
+                create=False
+            )
+            existing_shm.close()
+            existing_shm.unlink()
+            print(f"[SharedMemory] Removed existing segment: {name}")
+
+        except FileNotFoundError:
+            pass
         self.shm = shared_memory.SharedMemory(
             name=name,
             create=True,
