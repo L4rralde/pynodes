@@ -1,5 +1,6 @@
 import time
 import queue
+from collections import deque
 from typing import Dict
 
 import open3d as o3d
@@ -16,8 +17,14 @@ class PointcloudNode(Node):
         super().__init__(node_id, inbox, outbound, stop_event)
         self.viz = None
         self.pcds_dict: Dict[str, o3d.geometry.PointCloud] = {}
-        self.cam_poses = [np.eye(4)]
+        
+        # Use a deque for efficient popping from the left
+        self.cam_poses_queue = deque()
         self.cam_poses_ids = set()
+        
+        # --- Stabilization attributes ---
+        self.smoothed_pose = None
+        self.alpha = 0.4  # Lower alpha for smoother continuous fly-throughs
 
     def setup(self):
         self.subscribe("/cam/pose", self.on_cam_pose)
@@ -45,7 +52,6 @@ class PointcloudNode(Node):
         buffer, pcd_data = self.extract_msg_pcd_data(msg)
         
         received_pcd = o3d.geometry.PointCloud()
-        # Direct conversion is faster if numpy arrays are contiguous float64
         received_pcd.points = o3d.utility.Vector3dVector(pcd_data['points'])
         
         colors = pcd_data.get('colors')
@@ -67,7 +73,6 @@ class PointcloudNode(Node):
         received_pcd = self.convert_msg_to_o3d_pcd(msg)
 
         if pcd_id in self.pcds_dict:
-            # Update existing geometry in-place instead of O(N^2) concatenation
             target_pcd = self.pcds_dict[pcd_id]
             target_pcd.points = received_pcd.points
             if received_pcd.has_colors():
@@ -78,14 +83,7 @@ class PointcloudNode(Node):
             self.pcds_dict[pcd_id] = received_pcd
             self.viz.add_geometry(received_pcd)
 
-        self.logger.info("Updating window")
-        
-        # Only update the view to the most recent pose once per PCD update
-        for pose in self.cam_poses:
-            self.update_view(pose)
-            self.viz.poll_events()
-            self.viz.update_renderer()
-            time.sleep(0.002)
+        # Rendering is completely removed from this callback to prevent UI blocking
 
     def on_cam_pose(self, msg: Message) -> None:
         if msg.payload.get('done', False):
@@ -94,20 +92,41 @@ class PointcloudNode(Node):
         kfids = msg.payload['kf_ids']
         poses = msg.payload['pose']
         
-        self.cam_poses = []
         for i, kid in enumerate(kfids):
             if kid not in self.cam_poses_ids:
                 self.cam_poses_ids.add(kid)
-                self.cam_poses.append(poses[i])
+                if i % 2 == 0:
+                    self.cam_poses_queue.append(poses[i])
 
     def update_view(self, in_pose: np.ndarray) -> None:
-        pose = np.eye(4)
-        pose[:3] = in_pose[:3]
+        if self.smoothed_pose is None:
+            self.smoothed_pose = np.eye(4, dtype=np.float64)
+            self.smoothed_pose[:3] = in_pose[:3]
+        else:
+            # 1. Fast Translation Lerp
+            self.smoothed_pose[:3, 3] += self.alpha * (in_pose[:3, 3] - self.smoothed_pose[:3, 3])
+            
+            # 2. Fast Rotation Matrix interpolation via SVD
+            R_current = self.smoothed_pose[:3, :3]
+            R_target = in_pose[:3, :3]
+            
+            R_blended = (1.0 - self.alpha) * R_current + self.alpha * R_target
+            
+            # Orthogonalize to ensure it remains a valid rotation matrix
+            U, _, Vt = np.linalg.svd(R_blended)
+            R_valid = U @ Vt
+            
+            # Handle reflection case
+            if np.linalg.det(R_valid) < 0:
+                U[:, 2] *= -1
+                R_valid = U @ Vt
+                
+            self.smoothed_pose[:3, :3] = R_valid
 
+        # Update Open3D camera
         view_ctrl = self.viz.get_view_control()
         cam = view_ctrl.convert_to_pinhole_camera_parameters()
-        cam.extrinsic = pose
-
+        cam.extrinsic = self.smoothed_pose.astype(np.float64)
         view_ctrl.convert_from_pinhole_camera_parameters(cam, allow_arbitrary=True)
 
     def spin(self):
@@ -116,11 +135,28 @@ class PointcloudNode(Node):
 
         while not self.stop_event.is_set() and not getattr(self, 'done', False):
             try:
-                event = self.inbox.get(timeout=0.2)
+                # Process incoming messages with a very fast timeout
+                event = self.inbox.get(timeout=0.01)
                 self._dispatch(event)
             except queue.Empty:
-                self.viz.poll_events()
-                self.viz.update_renderer()
+                pass
+                
+            # --- Trajectory Interpolation Logic ---
+            if self.cam_poses_queue:
+                target_pose = self.cam_poses_queue[0]
+                self.update_view(target_pose)
+                
+                # Calculate positional distance to the current target
+                dist = np.linalg.norm(self.smoothed_pose[:3, 3] - target_pose[:3, 3])
+                
+                # If close enough (e.g., 0.05 units), or queue is getting backed up, 
+                # pop the target to chase the next waypoint.
+                if dist < 0.05 or len(self.cam_poses_queue) > 10:
+                    self.cam_poses_queue.popleft()
+                    
+            # Render on the main thread exactly once per loop
+            self.viz.poll_events()
+            self.viz.update_renderer()
 
         self.logger.info("Stopped")
 
