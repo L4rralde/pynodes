@@ -117,7 +117,8 @@ class LocalAlignNode(Node):
         self.publish(
             '/cam/pose',
             {
-                'pose': global_preds.extrinsic
+                'pose': global_preds.extrinsic,
+                'kf_ids': msg.payload['kf_ids']
             }
         )
         self.publish_pcd(chunk_id, pcd_data)
