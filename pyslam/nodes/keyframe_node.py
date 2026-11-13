@@ -20,7 +20,7 @@ from pyslam.utilities.shmem import AllocatedShmImage
 class KeyFrameNode(Node):
     name="video"
 
-    def __init__(self, node_id, inbox, outbound, stop_event, *, video_src_path:str=slam_conf.VIDEO_SRC_PATH, fps: int = 30):
+    def __init__(self, node_id, inbox, outbound, stop_event, *, video_src_path:str=slam_conf.VIDEO_SRC_PATH, fps: int = slam_conf.FPS):
         super().__init__(node_id, inbox, outbound, stop_event)
         self.video_src_path = video_src_path
         self.tgt_aspect_ratio: float|None = None
