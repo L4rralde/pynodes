@@ -86,8 +86,8 @@ class KeyFrameNode(Node):
             args=(frame_q,),
             daemon=True
         )
-        producer_thread.start()
         time.sleep(20)
+        producer_thread.start()
 
         try:
             while True:
