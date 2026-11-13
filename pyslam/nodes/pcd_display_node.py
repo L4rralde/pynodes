@@ -1,6 +1,6 @@
 import time
 import queue
-from typing import Dict, List
+from typing import Dict
 
 import open3d as o3d
 import numpy as np
@@ -15,8 +15,9 @@ class PointcloudNode(Node):
     def __init__(self, node_id, inbox, outbound, stop_event):
         super().__init__(node_id, inbox, outbound, stop_event)
         self.viz = None
-        self.pcds_dict: Dict[str, object]= {}
-        self.cam_poses: List[np.ndarray] = [np.eye(4)]
+        self.pcds_dict: Dict[str, o3d.geometry.PointCloud] = {}
+        self.cam_poses = [np.eye(4)]
+        self.cam_poses_ids = set()
 
     def setup(self):
         self.subscribe("/cam/pose", self.on_cam_pose)
@@ -27,38 +28,38 @@ class PointcloudNode(Node):
 
     def setup_viz(self) -> None:
         null_pcd = o3d.geometry.PointCloud()
-        null_pcd.points = o3d.utility.Vector3dVector(np.zeros((0, 3))) # Vacía
+        null_pcd.points = o3d.utility.Vector3dVector(np.zeros((0, 3)))
         self.viz.add_geometry(null_pcd)
         render_option = self.viz.get_render_option()
-        render_option.background_color = np.array([0.0, 0.0, 0.0])
+        render_option.background_color = np.zeros(3)
 
-    def extract_msg_pcd_data(self, msg: Message) -> Dict[str, np.ndarray]:
+    def extract_msg_pcd_data(self, msg: Message):
         data = msg.payload
-        shm = data.get('shm', False)
-        if not shm:
-            return data['pcd_data']
+        if not data.get('shm', False):
+            return None, data['pcd_data']
 
-        buff, pcd = AllocatedShmPcdData.attach(data['pcd_data'])
-        return buff, pcd
+        return AllocatedShmPcdData.attach(data['pcd_data'])
 
-    def convert_msg_to_o3d_pcd(self, msg: Message) -> object:
+    def convert_msg_to_o3d_pcd(self, msg: Message) -> o3d.geometry.PointCloud:
         self.logger.info(f"Receiving new pointcloud: {msg.payload['pcd_id']}")
-        buffer, msg.payload['pcd_data'] = self.extract_msg_pcd_data(msg)
-        self.logger.info("Converting pcd data into open3d pcd")
-        points = msg.payload['pcd_data']['points']
-        colors = msg.payload['pcd_data']['colors']
+        buffer, pcd_data = self.extract_msg_pcd_data(msg)
+        
         received_pcd = o3d.geometry.PointCloud()
-        received_pcd.points = o3d.utility.Vector3dVector(points)
+        # Direct conversion is faster if numpy arrays are contiguous float64
+        received_pcd.points = o3d.utility.Vector3dVector(pcd_data['points'])
+        
+        colors = pcd_data.get('colors')
         if colors is not None:
             received_pcd.colors = o3d.utility.Vector3dVector(colors)
+            
         if buffer is not None:
             buffer.close()
+            
         return received_pcd
 
     def on_pcd(self, msg: Message) -> None:
         data = msg.payload
-        done = data.get('done', False)
-        if done:
+        if data.get('done', False):
             self.finish()
             return
 
@@ -66,111 +67,68 @@ class PointcloudNode(Node):
         received_pcd = self.convert_msg_to_o3d_pcd(msg)
 
         if pcd_id in self.pcds_dict:
-            full_pcd = None
-            for pcd in self.pcds_dict.values():
-                if full_pcd is None:
-                    full_pcd = pcd
-                    continue
-                full_pcd += pcd
-            self.viz.update_geometry(full_pcd)
+            # Update existing geometry in-place instead of O(N^2) concatenation
+            target_pcd = self.pcds_dict[pcd_id]
+            target_pcd.points = received_pcd.points
+            if received_pcd.has_colors():
+                target_pcd.colors = received_pcd.colors
+            self.viz.update_geometry(target_pcd)
         else:
             self.logger.info("Adding geometry")
+            self.pcds_dict[pcd_id] = received_pcd
             self.viz.add_geometry(received_pcd)
 
-        self.pcds_dict[pcd_id] = received_pcd
         self.logger.info("Updating window")
-        #self.apply_yaxis_rotation()
+        
+        # Only update the view to the most recent pose once per PCD update
         for pose in self.cam_poses:
             self.update_view(pose)
             self.viz.poll_events()
             self.viz.update_renderer()
-            time.sleep(0.001)
+            time.sleep(0.002)
 
     def on_cam_pose(self, msg: Message) -> None:
-        done = msg.payload.get('done', False)
-        if done:
+        if msg.payload.get('done', False):
             return
-        self.cam_poses = msg.payload['pose'] # n4 times 4 matrix
+            
+        kfids = msg.payload['kf_ids']
+        poses = msg.payload['pose']
+        
+        self.cam_poses = []
+        for i, kid in enumerate(kfids):
+            if kid not in self.cam_poses_ids:
+                self.cam_poses_ids.add(kid)
+                self.cam_poses.append(poses[i])
 
     def update_view(self, in_pose: np.ndarray) -> None:
         pose = np.eye(4)
-        pose[:3] = in_pose
-        # Open3D expects world-to-camera extrinsic
-        extrinsic = pose
+        pose[:3] = in_pose[:3]
 
         view_ctrl = self.viz.get_view_control()
         cam = view_ctrl.convert_to_pinhole_camera_parameters()
+        cam.extrinsic = pose
 
-        cam.extrinsic = extrinsic
-
-        view_ctrl.convert_from_pinhole_camera_parameters(
-            cam,
-            allow_arbitrary=True
-        )
+        view_ctrl.convert_from_pinhole_camera_parameters(cam, allow_arbitrary=True)
 
     def spin(self):
         self.setup()
         self.logger.info("Started")
 
-        while not self.stop_event.is_set() and not self.done:
+        while not self.stop_event.is_set() and not getattr(self, 'done', False):
             try:
                 event = self.inbox.get(timeout=0.2)
                 self._dispatch(event)
             except queue.Empty:
                 self.viz.poll_events()
-                continue
+                self.viz.update_renderer()
 
         self.logger.info("Stopped")
 
-
     def finish(self) -> None:
-        self.viz.destroy_window()
+        if self.viz is not None:
+            while self.viz.poll_events():
+                self.viz.update_renderer()
+                time.sleep(0.01)
+            self.viz.destroy_window()
         self.logger.info("Finishing")
         self.done = True
-
-
-class PointcloudGeneratorNode(Node):
-    name = "pointcloud_generator"
-
-    def setup(self):
-        self.advertise("/pointcloud")
-
-    def finish(self) -> None:
-        self.logger.info("Finishing")
-        self.done = True
-        self.publish(
-            "/pointcloud",
-            {
-                "done": True
-            }
-        )
-
-    def spin(self):
-        self.setup()
-
-        dataset = o3d.data.EaglePointCloud()
-        pcd = o3d.io.read_point_cloud(dataset.path)
-        original_points = np.asarray(pcd.points).copy()
-        start_time = time.time()
-        while not self.stop_event.is_set():
-            elapsed = time.time() - start_time
-        
-            # Calculate a simple oscillating translation effect
-            offset = np.sin(elapsed * 3.0) * 0.2
-
-            updated_points = original_points.copy()
-            updated_points[:, 2] += offset  # Animate along the Z-axis
-
-            # Assign back to the point cloud geometry
-            #pcd.points = o3d.utility.Vector3dVector(updated_points)
-            self.publish(
-                "/pointcloud",
-                {
-                    "points": updated_points,
-                    "colors": np.random.uniform(0, 1, updated_points.shape)
-                }
-            )
-
-            time.sleep(1)
-
-        self.finish()
