@@ -84,6 +84,7 @@ class TimedVideoPublisher(FolderPublisher):
         super().__init__(path, **kwargs)
 
         self.first_time_published: float | None = None
+        self.num_lost_imgs: int = 0
 
         if self.fps <= 0:
             self.fps = 30
@@ -96,6 +97,10 @@ class TimedVideoPublisher(FolderPublisher):
 
     def read(self) -> np.ndarray | None:
         if self.idx_to_publish >= len(self.fpaths):
+            print(
+                f"Total number of lost images: {self.num_lost_imgs}"
+            )
+            print(f"Total number of images: {len(self.fpaths)}")
             return None
 
         if self.first_time_published is None:
@@ -116,13 +121,20 @@ class TimedVideoPublisher(FolderPublisher):
                 continue
 
             if next_idx >= len(self.fpaths):
+                print(
+                    f"Total number of lost images: {self.num_lost_imgs}"
+                )
+                print(f"Total number of images: {len(self.fpaths)}")
                 return None
 
             if next_idx > self.idx_to_publish:
-                print(
-                    f"Warning, skipping frames: "
-                    f"{list(range(self.idx_to_publish, next_idx))}"
-                )
+                skipped = list(range(self.idx_to_publish, next_idx))
+                if len(skipped) > 1:
+                    print(
+                        f"Warning, skipping frames: {skipped}"
+                    )
+                self.num_lost_imgs += len(skipped)
+
 
             self.idx_to_publish = next_idx + 1
 

@@ -10,6 +10,11 @@ from vggt_salad_slam.transforms.utils import to_ndarrays_for_pointcloud
 from vggt_salad_slam.dtypes import Prediction
 from pyslam.utilities.kf_storage import KeyFrameStorage
 from pyslam.utilities.allocate_data import AllocatedTorchImgChunk
+from pyslam.utilities.shmem import(
+    AllocatedShmImage,
+    AllocatedShmPrediction,
+    AllocatedSharedMemoryNdarray
+)
 from pyslam.model.model import VeggietSaladOmega
 
 
@@ -24,6 +29,7 @@ class FoundationModelNode(Node):
         self.model: VeggietSaladOmega = VeggietSaladOmega()
         self.chunk_cnt: int=0
         self.prev_kfids: List[int] = []
+        self.shm_prediction_o = AllocatedShmPrediction(slam_conf.CHUNK_SIZE)
 
     def setup(self):
         self.subscribe("/video/chunks", self.on_input)
@@ -55,19 +61,42 @@ class FoundationModelNode(Node):
                 continue
             self.kf_storage.add(kfid, img)
 
+    def get_msg_imgs(self, msg: Message) -> np.ndarray:
+        shm = msg.payload.get('shm', False)
+        if not shm:
+            return (msg.payload['imgs'], None)
+
+        buff, imgs = AllocatedSharedMemoryNdarray.attach(msg.payload['imgs'])
+        return buff, imgs
+
+    def publish_predictions(self, chunk_id: int, kfids: List[int], preds: Prediction) -> None:
+        self.shm_prediction_o.fill(preds)
+        self.publish(
+            "/3dgfm/predictions",
+            {
+                "type": "measurement",
+                "chunk_id": chunk_id,
+                "kf_ids": kfids,
+                "predictions": self.shm_prediction_o.get_metadata(),
+                "shm": True
+            }
+        )
+
     def on_input(self, msg: Message) -> None:
         if 'done' in msg.payload:
             self.finish()
             return
 
         kfids = msg.payload['kf_ids']
-        imgs = msg.payload['imgs']
+        buff, imgs = self.get_msg_imgs(msg)
         self.logger.info(f"Received chunk with kfids: {kfids}")
 
         imgs = [
             self.to_torch_img(img)
             for img in imgs
         ]
+
+        buff.close()
 
         if not self.input_chunk.is_initialized():
             self.input_chunk.set_img_shape(imgs[0].shape[-2:])
@@ -76,13 +105,16 @@ class FoundationModelNode(Node):
         self.input_chunk.fill(imgs)
         x = self.input_chunk.get()
 
+        self.logger.info("Calling forward pass")
         preds = self.model.model_prediction(x, kfids)
+        self.logger.info("Finished forward pass")
 
         chunk_id = self.chunk_cnt
         self.prev_kfids = kfids
         self.chunk_cnt += 1
 
         descriptors = preds.pop('descriptor')
+        self.logger.info(f"Publishing descriptors with id: {chunk_id}")
         self.publish(
             "/vpr/descriptors",
             {
@@ -91,21 +123,18 @@ class FoundationModelNode(Node):
                 "descriptors": descriptors
             }
         )
-        self.logger.info(f"Publishing descriptors of chunk_id: {self.chunk_cnt} with ids: {kfids}")
-
         preds = Prediction.from_dict(preds)
-        self.publish(
-            "/3dgfm/predictions",
-            {
-                "type": "measurement",
-                "chunk_id": chunk_id,
-                "kf_ids": kfids,
-                "predictions": preds
-            }
+
+        self.logger.info(f"Publishing predictions with id: {chunk_id}")
+        self.publish_predictions(
+            chunk_id,
+            kfids,
+            preds
         )
     
     def on_closed_loop(self, msg: Message) ->  None:
         pass
+
 
 class VprNode(FoundationModelNode):
     name="vpr"

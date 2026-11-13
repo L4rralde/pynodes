@@ -1,11 +1,12 @@
 import time
 import queue
-from typing import Dict
+from typing import Dict, List
 
 import open3d as o3d
 import numpy as np
 
 from pynodes import Node, Message
+from pyslam.utilities.shmem import AllocatedShmPcdData
 
 
 class PointcloudNode(Node):
@@ -15,7 +16,7 @@ class PointcloudNode(Node):
         super().__init__(node_id, inbox, outbound, stop_event)
         self.viz = None
         self.pcds_dict: Dict[str, object]= {}
-        self.cam_pose: np.ndarray = np.eye(4)
+        self.cam_poses: List[np.ndarray] = [np.eye(4)]
 
     def setup(self):
         self.subscribe("/cam/pose", self.on_cam_pose)
@@ -28,6 +29,8 @@ class PointcloudNode(Node):
         null_pcd = o3d.geometry.PointCloud()
         null_pcd.points = o3d.utility.Vector3dVector(np.zeros((0, 3))) # Vacía
         self.viz.add_geometry(null_pcd)
+        render_option = self.viz.get_render_option()
+        render_option.background_color = np.array([0.0, 0.0, 0.0])
         
     def apply_yaxis_rotation(self) -> None:
         view_ctrl = self.viz.get_view_control()
@@ -47,6 +50,29 @@ class PointcloudNode(Node):
 
         view_ctrl.convert_from_pinhole_camera_parameters(cam)
 
+    def extract_msg_pcd_data(self, msg: Message) -> Dict[str, np.ndarray]:
+        data = msg.payload
+        shm = data.get('shm', False)
+        if not shm:
+            return data['pcd_data']
+
+        buff, pcd = AllocatedShmPcdData.attach(data['pcd_data'])
+        return buff, pcd
+
+    def convert_msg_to_o3d_pcd(self, msg: Message) -> object:
+        self.logger.info(f"Receiving new pointcloud: {msg.payload['pcd_id']}")
+        buffer, msg.payload['pcd_data'] = self.extract_msg_pcd_data(msg)
+        self.logger.info("Converting pcd data into open3d pcd")
+        points = msg.payload['pcd_data']['points']
+        colors = msg.payload['pcd_data']['colors']
+        received_pcd = o3d.geometry.PointCloud()
+        received_pcd.points = o3d.utility.Vector3dVector(points)
+        if colors is not None:
+            received_pcd.colors = o3d.utility.Vector3dVector(colors)
+        if buffer is not None:
+            buffer.close()
+        return received_pcd
+
     def on_pcd(self, msg: Message) -> None:
         data = msg.payload
         done = data.get('done', False)
@@ -55,14 +81,7 @@ class PointcloudNode(Node):
             return
 
         pcd_id = data['pcd_id']
-        points = data['points']
-        colors = data.get('colors', None)
-        self.logger.info(f"Receiving new pointcloud: {pcd_id}")
-
-        received_pcd = o3d.geometry.PointCloud()
-        received_pcd.points = o3d.utility.Vector3dVector(points)
-        if colors is not None:
-            received_pcd.colors = o3d.utility.Vector3dVector(colors)
+        received_pcd = self.convert_msg_to_o3d_pcd(msg)
 
         if pcd_id in self.pcds_dict:
             full_pcd = None
@@ -73,24 +92,27 @@ class PointcloudNode(Node):
                 full_pcd += pcd
             self.viz.update_geometry(full_pcd)
         else:
-            self.viz.add_geometry(received_pcd)
             self.logger.info("Adding geometry")
+            self.viz.add_geometry(received_pcd)
 
-        #self.apply_yaxis_rotation()
-        self.update_view()
         self.pcds_dict[pcd_id] = received_pcd
-        self.viz.poll_events()
-        self.viz.update_renderer()
+        self.logger.info("Updating window")
+        #self.apply_yaxis_rotation()
+        for pose in self.cam_poses:
+            self.update_view(pose)
+            self.viz.poll_events()
+            self.viz.update_renderer()
+            time.sleep(0.001)
 
     def on_cam_pose(self, msg: Message) -> None:
         done = msg.payload.get('done', False)
         if done:
             return
-        self.cam_pose[:3] = msg.payload['pose'] # 4 times 4 matrix
+        self.cam_poses = msg.payload['pose'] # n4 times 4 matrix
 
-    def update_view(self) -> None:
-        pose = self.cam_pose  # T_world_cam
-
+    def update_view(self, in_pose: np.ndarray) -> None:
+        pose = np.eye(4)
+        pose[:3] = in_pose
         # Open3D expects world-to-camera extrinsic
         extrinsic = pose
 
