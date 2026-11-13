@@ -3,6 +3,8 @@ from pynodes import Node
 import time
 import os
 import shutil
+import queue
+import threading
 
 import numpy as np
 import cv2
@@ -18,68 +20,133 @@ from pyslam.utilities.shmem import AllocatedShmImage
 class KeyFrameNode(Node):
     name="video"
 
-    def __init__(self, node_id, inbox, outbound, stop_event, *, video_src_path:str=slam_conf.VIDEO_SRC_PATH):
+    def __init__(self, node_id, inbox, outbound, stop_event, *, video_src_path:str=slam_conf.VIDEO_SRC_PATH, fps: int = 30):
         super().__init__(node_id, inbox, outbound, stop_event)
         self.video_src_path = video_src_path
         self.tgt_aspect_ratio: float|None = None
         self.tgt_size: Tuple[int]|None = None
         self.shm_message = AllocatedShmImage("keyframes", max_num_bytes=512*512*4*slam_conf.CHUNK_SIZE)
+        self.fps = fps
 
     def setup(self):
         self.advertise("/video/chunks")
-        self.create_kf_directory('./keyframes')
+        self.create_kf_directory('./keyframes_dir')
 
     def create_kf_directory(self, path: str) -> None:
         if os.path.exists(path):
             shutil.rmtree(path)
         os.makedirs(path)
 
+    def video_feader(self, frame_q: queue.Queue) -> None:
+        count = 0
+        video_producer = TimedVideoPublisher(
+            self.video_src_path,
+            fps=self.fps
+        )
+        kf_filtering = FrameTracker()
+        try:
+            while not self.stop_event.is_set():
+                img = video_producer.read()
+                if img is None:
+                    break
+
+                img = self.process_img(img)
+                
+                enough_disparity = kf_filtering.compute_disparity(
+                    img,
+                    slam_conf.MIN_DISPARITY
+                )
+
+                frame_q.put({
+                    'frame_data':{
+                        'img': img,
+                        'enough_disparity': enough_disparity,
+                        'id': count
+                    }
+                })
+                count += 1
+        finally:
+            frame_q.put({'done': True})
+            self.logger.info("Video finished")
+            video_producer.release()
+        
     def spin(self):
         self.setup()
 
-        count = 0
-        video_producer = TimedVideoPublisher(
-            self.video_src_path, fps=30
-        )
-        kf_filtering = FrameTracker()
         kf_count = 0
         chunk_cnt = 0
 
         chunk_kfids = []
         img_chunk = []
-        time.sleep(20)
 
-        while not self.stop_event.is_set():
-            img = video_producer.read()
-            if img is None:
-                self.publish_chunk(img_chunk, chunk_kfids, chunk_cnt)
-                self.finish()
-                break
+        frame_q = queue.Queue()
 
-            count += 1
-            img = self.process_img(img)
+        producer_thread = threading.Thread(
+            target=self.video_feader,
+            args=(frame_q,),
+            daemon=True
+        )
+        producer_thread.start()
+        #time.sleep(20)
 
-            enough_disparity = kf_filtering.compute_disparity(img, slam_conf.MIN_DISPARITY)
-            if not enough_disparity:
-                continue
+        try:
+            while True:
+                try:
+                    video_info_msg = frame_q.get(timeout=0.05)
+                except queue.Empty:
+                    if not producer_thread.is_alive():
+                        break
+                    continue
+                try:
+                    if video_info_msg.get('done', False):
+                        self.logger.info("Received done")
+                        if len(chunk_kfids) > slam_conf.CHUNK_OVERLAP:
+                            self.publish_chunk(
+                                img_chunk,
+                                chunk_kfids,
+                                chunk_cnt
+                            )
+                        break
 
-            kf_id = kf_count
-            kf_count += 1
+                    frame_info = video_info_msg['frame_data']
+                    frame_cnt = frame_info['id']
+                    img = frame_info['img']
+                    enough_disparity = frame_info['enough_disparity']
 
-            chunk_kfids.append(kf_id)
-            img_chunk.append(img)
+                    cv2.imshow("video", cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
+                    cv2.waitKey(1)
 
-            self.save_image(kf_id, img)
+                    if not enough_disparity:
+                        continue
 
-            if len(chunk_kfids) == slam_conf.CHUNK_SIZE:
-                self.publish_chunk(img_chunk, chunk_kfids, chunk_cnt)
+                    kf_id = kf_count
+                    kf_count += 1
+                    self.save_image(kf_id, img)
+                    chunk_kfids.append(kf_id)
+                    img_chunk.append(img)
 
-                chunk_kfids = chunk_kfids[-slam_conf.CHUNK_OVERLAP:]
-                img_chunk = img_chunk[-slam_conf.CHUNK_OVERLAP:]
-                chunk_cnt += 1
+                    if len(chunk_kfids) == slam_conf.CHUNK_SIZE:
+                        self.publish_chunk(
+                            img_chunk,
+                            chunk_kfids,
+                            chunk_cnt
+                        )
 
-        video_producer.release()
-        self.finish()
+                        chunk_kfids = chunk_kfids[-slam_conf.CHUNK_OVERLAP:]
+                        img_chunk = img_chunk[-slam_conf.CHUNK_OVERLAP:]
+                        chunk_cnt += 1
+
+                finally:
+                    frame_q.task_done()
+
+        except Exception:
+            self.logger.exception("Error while processing video frames")
+
+        finally:
+            cv2.destroyWindow("video")
+            producer_thread.join()
+            frame_q.join()
+            self.finish()
 
     def process_img(self, img: np.ndarray) -> np.ndarray:
         h, w = img.shape[:2]
@@ -100,7 +167,7 @@ class KeyFrameNode(Node):
         return img
 
     def save_image(self, kfid: int, img: np.ndarray) -> None:
-        Image.fromarray(img).save(f"./keyframes/{kfid}.png")
+        Image.fromarray(img).save(f"./keyframes_dir/{kfid}.png")
 
     def publish_chunk(
             self,
@@ -128,4 +195,5 @@ class KeyFrameNode(Node):
                 "done": True
             }
         )
+        self.logger.info("Done sent")
         self.shm_message.release()
