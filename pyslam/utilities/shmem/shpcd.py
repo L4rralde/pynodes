@@ -15,9 +15,15 @@ class BufferData:
 
 
 class AllocatedShmPcdData:
-    def __init__(self):
-        self.points = AllocatedSharedMemoryNdarray("pointcloud_points")
-        self.colors = AllocatedSharedMemoryNdarray("pointcloud_colors")
+    def __init__(self, num_imgs: int):
+        self.points = AllocatedSharedMemoryNdarray(
+            "pointcloud_points",
+            max_num_bytes=num_imgs*512*512*3*8
+        )
+        self.colors = AllocatedSharedMemoryNdarray(
+            "pointcloud_colors",
+            max_num_bytes=num_imgs*512*512*3*8
+        )
 
     def fill(self, points: np.ndarray, colors: np.ndarray) -> None:
         self.points.fill(points)

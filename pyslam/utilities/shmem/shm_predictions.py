@@ -6,15 +6,35 @@ from vggt_salad_slam.dtypes import Prediction
 from .sharray import AllocatedSharedMemoryNdarray
 
 
+ONE_IMG_BYTES = 512*512*3*4
+
 
 class AllocatedShmPrediction:
-    def __init__(self) -> None:
-        self.depth = AllocatedSharedMemoryNdarray("prediction_depth")
-        self.depth_conf = AllocatedSharedMemoryNdarray("prediction_depth_conf")
-        self.extrinsic = AllocatedSharedMemoryNdarray("prediction_extrinsic", max_num_bytes=8192)
-        self.intrinsic = AllocatedSharedMemoryNdarray("prediction_intrinsic", max_num_bytes=4096)
-        self.images = AllocatedSharedMemoryNdarray("prediction_images")
-        self.ids = AllocatedSharedMemoryNdarray("predictions_ids", max_num_bytes=512)
+    def __init__(self, num_imgs: int) -> None:
+        self.depth = AllocatedSharedMemoryNdarray(
+            "prediction_depth",
+            max_num_bytes=num_imgs*ONE_IMG_BYTES
+        )
+        self.depth_conf = AllocatedSharedMemoryNdarray(
+            "prediction_depth_conf",
+            max_num_bytes=num_imgs*ONE_IMG_BYTES
+        )
+        self.extrinsic = AllocatedSharedMemoryNdarray(
+            "prediction_extrinsic",
+            max_num_bytes=256*num_imgs
+        )
+        self.intrinsic = AllocatedSharedMemoryNdarray(
+            "prediction_intrinsic",
+            max_num_bytes=256*num_imgs
+        )
+        self.images = AllocatedSharedMemoryNdarray(
+            "prediction_images",
+            max_num_bytes=num_imgs*ONE_IMG_BYTES
+        )
+        self.ids = AllocatedSharedMemoryNdarray(
+            "predictions_ids",
+            max_num_bytes=num_imgs*32
+        )
         self.ids_not_null: bool = False
 
 

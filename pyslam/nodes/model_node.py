@@ -29,7 +29,7 @@ class FoundationModelNode(Node):
         self.model: VeggietSaladOmega = VeggietSaladOmega()
         self.chunk_cnt: int=0
         self.prev_kfids: List[int] = []
-        self.shm_prediction_o = AllocatedShmPrediction()
+        self.shm_prediction_o = AllocatedShmPrediction(slam_conf.CHUNK_SIZE)
 
     def setup(self):
         self.subscribe("/video/chunks", self.on_input)

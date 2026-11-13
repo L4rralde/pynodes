@@ -38,7 +38,9 @@ class KeyFrameNode(Node):
         self.setup()
 
         count = 0
-        video_producer = TimedVideoPublisher(self.video_src_path, fps=30)
+        video_producer = TimedVideoPublisher(
+            self.video_src_path, fps=30
+        )
         kf_filtering = FrameTracker()
         kf_count = 0
         chunk_cnt = 0

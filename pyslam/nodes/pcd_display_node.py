@@ -102,7 +102,7 @@ class PointcloudNode(Node):
             self.update_view(pose)
             self.viz.poll_events()
             self.viz.update_renderer()
-            time.sleep(0.010)
+            time.sleep(0.001)
 
     def on_cam_pose(self, msg: Message) -> None:
         done = msg.payload.get('done', False)
